@@ -1,0 +1,30 @@
+# ReviewBay — two services, both dockerized.
+#   ingestion : scrapes each source on a loop and MERGEs into Snowflake RAW
+#   api       : FastAPI RAG chatbot over Snowflake MARTS (Cortex + Claude)
+#
+# Snowflake and Claude are managed/cloud, so there's no DB container here.
+# The event bus (Kafka/Redpanda) is intentionally NOT included in v1 — add it
+# only when 15-min freshness isn't enough.
+
+services:
+  ingestion:
+    build:
+      context: .
+      dockerfile: docker/ingestion.Dockerfile
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - ./config:/app/config:ro   # edit brands.yml without a rebuild
+      - ./state:/app/state        # alert state (dedupe/baseline) persists here
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - ./config:/app/config   # read brands + append ones added via the onboarding UI
+      - ./state:/app/state     # alert state (dedupe/baseline) persists here
+    ports:
+      - "8000:8000"

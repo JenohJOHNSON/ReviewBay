@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ReviewBay Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/theme.css">
+<script src="/static/brands.js"></script>
+<style>
+  .toolbar select { min-width:170px; }
+  #updated { font-size:12px; }
+  .kpi { font-size:34px; font-weight:800; letter-spacing:-.02em; }
+  .kpi small { font-size:14px; color:var(--muted); font-weight:500; }
+  .row { display:flex; align-items:center; gap:10px; margin:9px 0; font-size:14px; }
+  .row .lbl { width:104px; color:var(--muted); text-transform:capitalize; }
+  .row .bar { flex:1; height:10px; }
+  .row .val { width:44px; text-align:right; color:var(--muted); font-weight:600; }
+  .donutwrap { display:flex; align-items:center; gap:18px; }
+  .donut { width:120px; height:120px; }
+  .legend div { display:flex; align-items:center; gap:8px; margin:7px 0; font-size:14px; }
+  .legend .dot { width:11px; height:11px; }
+  .rev-item { border-bottom:1px solid var(--line); padding:11px 0; }
+  .rev-item:last-child { border-bottom:none; }
+  .rev-item a { font-size:12px; font-weight:600; }
+  .pill.pos { color:var(--pos); border-color:var(--pos); }
+  .pill.neu { color:var(--neu); border-color:var(--neu); }
+  .pill.neg { color:var(--neg); border-color:var(--neg); }
+  .revhead { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px; }
+  .revhead label { display:inline; text-transform:none; letter-spacing:0; font-size:13px; font-weight:500; margin:0; color:var(--muted); }
+  .revhead select { padding:8px 12px; font-size:14px; }
+  .ai .sub { text-transform:none; font-weight:400; color:var(--muted); font-size:12px; letter-spacing:0; }
+  .summary { font-size:15px; line-height:1.6; margin:2px 0 16px; }
+  .proscons { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+  @media (max-width:600px){ .proscons { grid-template-columns:1fr; } }
+  .proscons h4 { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
+  .proscons ul { margin:6px 0 0; padding-left:18px; }
+  .proscons li { margin:5px 0; font-size:14px; }
+  .beh { margin:14px 0 0; font-size:14px; color:var(--ink); background:var(--surface-2); padding:11px 13px; border-radius:10px; }
+  .tt { margin:16px 0 8px; font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
+  .theme { display:inline-block; border:1px solid var(--line); border-radius:20px; padding:5px 12px; margin:0 6px 6px 0; font-size:13px; font-weight:500; cursor:pointer; background:none; font-family:var(--font); transition:background .12s ease; }
+  .theme:hover { background:var(--accent-soft); }
+  .theme.sel { background:var(--accent-soft); }
+  #themeDesc { margin-top:8px; font-size:14px; line-height:1.55; background:var(--surface-2); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+  #themeDesc.hidden { display:none; }
+  #themeDesc .tname { font-weight:700; color:var(--ink); margin-right:6px; }
+  .alertbar { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a href="/" class="brand">ReviewBay</a>
+  <span class="sp"></span>
+  <nav class="nav">
+    <a href="/start">Add brand</a>
+    <a href="/dashboard" class="active">Dashboard</a>
+    <a href="/compare">Compare</a>
+    <a href="/chat" id="chatLink">Chat</a>
+  </nav>
+</header>
+<main class="wrap">
+  <div class="toolbar">
+    <select id="brand" title="Pick one of your brands"></select>
+    <span id="updated" class="muted"></span>
+  </div>
+  <div id="insights"></div>
+  <div id="content"><div class="empty">Loading</div></div>
+  <div id="reviews"></div>
+  <div id="alertsPanel"></div>
+</main>
+<script>
+const brandSel = document.getElementById('brand');
+const content = document.getElementById('content');
+const insightsEl = document.getElementById('insights');
+function esc(s){ return (s||'').toString().replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+async function load(brand) {
+  // Carry the selected brand into the Chat link so Chat asks about this brand.
+  const cl = document.getElementById('chatLink');
+  if (cl) cl.href = '/chat' + (brand ? '?brand=' + encodeURIComponent(brand) : '');
+  content.innerHTML = '<div class="empty">Loading</div>';
+  let d;
+  try { d = await (await fetch('/api/stats' + (brand ? '?brand=' + encodeURIComponent(brand) : ''))).json(); }
+  catch(e){ content.innerHTML = '<div class="empty">Could not load stats: ' + esc(String(e)) + '</div>'; return; }
+
+  if (!d.total) { content.innerHTML = '<div class="empty">No reviews yet for this brand. Collection runs in the background, so check back in a few minutes.</div>'; return; }
+
+  const s = d.sentiment, tot = s.positive + s.neutral + s.negative || 1;
+  const pct = n => Math.round(100 * n / tot);
+  const deg = { pos: 360*s.positive/tot, neu: 360*s.neutral/tot };
+  const donut = `conic-gradient(var(--pos) 0 ${deg.pos}deg, var(--neu) ${deg.pos}deg ${deg.pos+deg.neu}deg, var(--neg) ${deg.pos+deg.neu}deg 360deg)`;
+
+  const maxSrc = Math.max(...d.by_source.map(x=>x.count), 1);
+  const sourceRows = d.by_source.map(x =>
+    `<div class="row"><div class="lbl">${esc(x.source)}</div>
+      <div class="bar"><span style="width:${Math.round(100*x.count/maxSrc)}%"></span></div>
+      <div class="val">${x.count}</div></div>`).join('') || '<div class="muted">None</div>';
+
+  content.innerHTML = `
+    <div class="grid">
+      <div class="card"><h3>Total reviews</h3><div class="kpi">${d.total}</div></div>
+      <div class="card"><h3>Avg rating</h3><div class="kpi">${d.avg_rating!=null?d.avg_rating+' <small>/ 5</small>':'<small>n/a</small>'}</div></div>
+      <div class="card"><h3>Positive</h3><div class="kpi" style="color:var(--pos)">${pct(s.positive)}%</div></div>
+      <div class="card"><h3>Negative</h3><div class="kpi" style="color:var(--neg)">${pct(s.negative)}%</div></div>
+    </div>
+    <div class="grid" style="margin-top:14px">
+      <div class="card">
+        <h3>Sentiment</h3>
+        <div class="donutwrap">
+          <div class="donut" style="background:${donut}"></div>
+          <div class="legend">
+            <div><span class="dot" style="background:var(--pos)"></span> Positive, ${s.positive} (${pct(s.positive)}%)</div>
+            <div><span class="dot" style="background:var(--neu)"></span> Neutral, ${s.neutral} (${pct(s.neutral)}%)</div>
+            <div><span class="dot" style="background:var(--neg)"></span> Negative, ${s.negative} (${pct(s.negative)}%)</div>
+          </div>
+        </div>
+      </div>
+      <div class="card"><h3>Where reviews come from</h3>${sourceRows}</div>
+    </div>`;
+  const up = document.getElementById('updated');
+  if (up) up.textContent = 'Updated ' + new Date().toLocaleTimeString();
+}
+
+async function loadInsights(brand){
+  insightsEl.innerHTML = `<div class="card ai"><h3>AI executive summary</h3><div class="muted">Analyzing reviews with AI</div></div>`;
+  let d;
+  try { d = await (await fetch('/api/insights' + (brand ? '?brand=' + encodeURIComponent(brand) : ''))).json(); }
+  catch(e){ insightsEl.innerHTML = ''; return; }
+  if(!d || (!d.summary && !(d.themes||[]).length)){ insightsEl.innerHTML = ''; return; }
+  const li = a => (a && a.length) ? a.map(x=>`<li>${esc(x)}</li>`).join('') : '<li class="muted">None</li>';
+  const themeList = d.themes || [];
+  const themes = themeList.map((t,i)=>{
+    const c = t.sentiment==='positive'?'var(--pos)':t.sentiment==='negative'?'var(--neg)':'var(--neu)';
+    return `<button type="button" class="theme" data-idx="${i}" style="border-color:${c};color:${c}">${esc(t.name)}${t.mentions?`, ${t.mentions}`:''}</button>`;
+  }).join('') || '<span class="muted">None found</span>';
+  const themeHint = themeList.length ? '<span class="sub" style="display:block;margin:0 0 8px">Click a theme to see what it means</span>' : '';
+  insightsEl.innerHTML = `
+    <div class="card ai">
+      <h3>AI executive summary <span class="sub">, ${d.reviews_analyzed||0} reviews analyzed</span></h3>
+      <p class="summary">${esc(d.summary||'')}</p>
+      <div class="proscons">
+        <div><h4>What they love</h4><ul>${li(d.pros)}</ul></div>
+        <div><h4>What frustrates them</h4><ul>${li(d.cons)}</ul></div>
+      </div>
+      ${d.behavior?`<p class="beh">${esc(d.behavior)}</p>`:''}
+      <h4 class="tt">Top themes</h4>
+      ${themeHint}
+      <div class="themes-row">${themes}</div>
+      <div id="themeDesc" class="hidden"></div>
+    </div>`;
+  // Clicking a theme chip reveals a short, AI-written description of that theme.
+  const descEl = document.getElementById('themeDesc');
+  insightsEl.querySelectorAll('.theme').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const t = themeList[parseInt(btn.dataset.idx, 10)];
+      if(!t) return;
+      insightsEl.querySelectorAll('.theme').forEach(b => b.classList.remove('sel'));
+      btn.classList.add('sel');
+      const sent = t.sentiment ? t.sentiment[0].toUpperCase()+t.sentiment.slice(1) : 'Neutral';
+      const desc = t.description || 'A recurring topic customers bring up in these reviews.';
+      descEl.innerHTML = `<span class="tname">${esc(t.name)}</span><span class="pill">${esc(sent)}</span>`
+        + (t.mentions?`<span class="pill">${t.mentions} mentions</span>`:'')
+        + `<div style="margin-top:6px">${esc(desc)}</div>`;
+      descEl.classList.remove('hidden');
+    });
+  });
+}
+
+function loadAlerts(){
+  // Alerts run in the backend but are not part of this release, so the panel
+  // shows a simple placeholder (no env or webhook details on screen).
+  const el = document.getElementById('alertsPanel');
+  el.innerHTML = `<div class="card" style="margin-top:14px"><h3>Alerts</h3>
+    <div class="alertbar">
+      <span class="pill" style="color:var(--accent);border-color:var(--accent)">Coming soon</span>
+      <span class="muted">Get pinged the moment a new negative review lands. We are putting the finishing touches on this.</span>
+    </div></div>`;
+}
+
+let reviewSort = 'negative';
+function sentClass(s){ return s==='positive'?'pos':s==='negative'?'neg':'neu'; }
+async function loadReviews(brand){
+  const el = document.getElementById('reviews');
+  let d;
+  try { d = await (await fetch('/api/reviews?sort=' + encodeURIComponent(reviewSort) + (brand ? '&brand=' + encodeURIComponent(brand) : ''))).json(); }
+  catch(e){ el.innerHTML = ''; return; }
+  const list = (d.reviews||[]).map(n => `
+    <div class="rev-item">
+      <span class="pill">${esc(n.source)}</span>${n.rating!=null?`<span class="pill">${n.rating}/5</span>`:''}
+      ${n.sentiment?`<span class="pill ${sentClass(n.sentiment)}">${esc(n.sentiment)}</span>`:''}
+      ${brand?'':`<span class="pill">${esc(n.brand)}</span>`}
+      <a href="${esc(n.source_url)}" target="_blank" rel="noopener">open</a>
+      <div class="muted" style="margin-top:4px">${esc(n.excerpt)}</div>
+    </div>`).join('') || '<div class="empty">No reviews yet for this selection.</div>';
+  const opts = [['negative','Most negative'],['positive','Most positive'],['recent','Newest'],['oldest','Oldest'],['rating_low','Lowest rating'],['rating_high','Highest rating']]
+    .map(([v,l]) => `<option value="${v}"${v===reviewSort?' selected':''}>${l}</option>`).join('');
+  el.innerHTML = `<div class="card full" style="margin-top:14px">
+    <div class="revhead"><h3 style="margin:0">Reviews</h3><span style="flex:1"></span>
+      <label for="revSort">Sort by</label><select id="revSort">${opts}</select></div>
+    ${list}</div>`;
+  document.getElementById('revSort').onchange = (e) => { reviewSort = e.target.value; loadReviews(brand); };
+}
+
+brandSel.addEventListener('change', () => { load(brandSel.value); loadInsights(brandSel.value); loadReviews(brandSel.value); });
+
+function showEmpty(){
+  content.innerHTML = `<div class="card"><div class="empty">
+    <p style="margin:0 0 14px">No brands yet. Add one and ReviewBay will start gathering its reviews.</p>
+    <a href="/start" class="btn">Add a brand</a></div></div>`;
+}
+
+function init(){
+  const qsBrand = (new URLSearchParams(location.search).get('brand') || '').trim();
+  // Opening a brand via a direct link adds it to this browser's own history.
+  if (qsBrand && window.RB_Brands) RB_Brands.add(qsBrand);
+  const brands = window.RB_Brands ? RB_Brands.list() : [];
+  loadAlerts();
+  if (!brands.length) { showEmpty(); return; }
+  const chosen = qsBrand || brands[0];
+  RB_Brands.fillSelect(brandSel, { chosen });
+  load(chosen);
+  loadInsights(chosen);
+  loadReviews(chosen);
+  setInterval(() => load(brandSel.value), 60000);  // stats refresh; insights are cached server-side
+}
+init();
+</script>
+</body>
+</html>

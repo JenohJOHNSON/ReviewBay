@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ReviewBay: Know what customers really think</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/theme.css">
+<style>
+  .hero { text-align:center; padding:46px 0 30px; }
+  .eyebrow { display:inline-block; background:var(--accent-soft); color:var(--accent); font-size:12px;
+             font-weight:600; letter-spacing:.06em; text-transform:uppercase; padding:6px 13px; border-radius:20px; }
+  .hero h1 { font-size:44px; line-height:1.12; letter-spacing:-.025em; font-weight:800; margin:18px auto 14px; max-width:15ch; }
+  .hero p.lead { color:var(--muted); font-size:18px; max-width:600px; margin:0 auto 26px; line-height:1.6; }
+  .cta-row { display:flex; gap:12px; justify-content:center; flex-wrap:wrap; }
+  .section { margin:56px 0; }
+  .section-head { text-align:center; margin-bottom:30px; }
+  .section-head h2 { font-size:28px; letter-spacing:-.02em; font-weight:800; }
+  .section-head p { color:var(--muted); margin:8px auto 0; max-width:560px; }
+
+  /* how-it-works infographic */
+  .flow { display:grid; grid-template-columns:repeat(4, 1fr); gap:14px; align-items:stretch; }
+  .flow .step { position:relative; background:var(--surface); border:1px solid var(--line);
+                border-radius:var(--r-lg); padding:22px 18px; box-shadow:var(--shadow); }
+  .flow .num { width:38px; height:38px; border-radius:50%; background:var(--accent); color:#fff;
+               font-weight:800; font-size:17px; display:flex; align-items:center; justify-content:center; margin-bottom:14px; }
+  .flow .step h3 { font-size:16px; text-transform:none; letter-spacing:0; color:var(--ink); margin:0 0 7px; font-weight:700; }
+  .flow .step p { margin:0; font-size:14px; color:var(--muted); line-height:1.55; }
+  .flow .arrow { position:absolute; right:-11px; top:34px; z-index:2; color:var(--line); }
+  .flow .step:last-child .arrow { display:none; }
+  @media (max-width:760px){
+    .flow { grid-template-columns:1fr; }
+    .flow .arrow { right:auto; left:33px; top:auto; bottom:-13px; transform:rotate(90deg); }
+  }
+
+  /* value cards */
+  .value { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
+  @media (max-width:760px){ .value { grid-template-columns:1fr; } }
+  .value .card h3 { text-transform:none; letter-spacing:0; color:var(--ink); font-size:17px; font-weight:700; margin-bottom:8px; }
+  .value .card p { margin:0; color:var(--muted); font-size:14px; }
+  .value .tagline { font-size:11px; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:var(--accent); margin-bottom:10px; }
+
+  /* under the hood */
+  .stack { background:var(--surface-2); border:1px solid var(--line); border-radius:var(--r-lg); padding:22px 24px; }
+  .stack .pipe { display:flex; flex-wrap:wrap; align-items:center; gap:10px; font-size:14px; font-weight:600; }
+  .stack .pipe .node { background:var(--surface); border:1px solid var(--line); border-radius:8px; padding:7px 12px; }
+  .stack .pipe .sep { color:var(--muted); }
+  .stack p { margin:12px 0 0; color:var(--muted); font-size:13.5px; }
+
+  /* faq */
+  .faq { max-width:720px; margin:0 auto; }
+  .faq details { background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:2px 18px; margin-bottom:10px; box-shadow:var(--shadow); }
+  .faq summary { cursor:pointer; font-weight:600; padding:15px 0; list-style:none; display:flex; align-items:center; justify-content:space-between; }
+  .faq summary::-webkit-details-marker { display:none; }
+  .faq summary::after { content:"+"; color:var(--accent); font-size:20px; font-weight:700; margin-left:14px; }
+  .faq details[open] summary::after { content:"\2212"; }
+  .faq details p { margin:0 0 16px; color:var(--muted); font-size:14.5px; line-height:1.6; }
+
+  .closer { text-align:center; background:var(--accent); color:#fff; border-radius:var(--r-lg); padding:40px 24px; }
+  .closer h2 { color:#fff; font-size:26px; letter-spacing:-.02em; }
+  .closer p { color:#fbe6dc; margin:8px auto 22px; max-width:460px; }
+  .closer .btn { background:#fff; color:var(--accent); }
+  .closer .btn:hover { background:#fbe6dc; }
+  footer.foot { text-align:center; color:var(--muted); font-size:13px; padding:30px 0 8px; }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a href="/" class="brand">ReviewBay</a>
+  <span class="sp"></span>
+  <nav class="nav">
+    <a href="/start">Add brand</a>
+    <a href="/dashboard">Dashboard</a>
+    <a href="/compare">Compare</a>
+    <a href="/chat">Chat</a>
+  </nav>
+</header>
+
+<main class="wrap">
+  <section class="hero">
+    <span class="eyebrow">Brand reputation, in plain language</span>
+    <h1>Know what customers really think about any brand</h1>
+    <p class="lead">Type in a brand. ReviewBay gathers reviews from across the web and the app stores, reads every one with AI, and hands you a clear picture of what people love, what frustrates them, and why.</p>
+    <div class="cta-row">
+      <a href="/start" class="btn">Add your first brand</a>
+      <a href="/chat" class="btn ghost">Try the review chat</a>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-head">
+      <h2>How it works</h2>
+      <p>Four steps, no setup. You bring a brand name; ReviewBay does the rest.</p>
+    </div>
+    <div class="flow">
+      <div class="step">
+        <div class="num">1</div>
+        <h3>Add a brand</h3>
+        <p>Type a brand name, and its website if you have it (that helps us find the right one). Nothing else to configure.</p>
+        <svg class="arrow" width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="step">
+        <div class="num">2</div>
+        <h3>We gather reviews</h3>
+        <p>Custom collectors pull real reviews from across the web, the Apple App Store, and Google Play, then tidy them into one shape.</p>
+        <svg class="arrow" width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="step">
+        <div class="num">3</div>
+        <h3>AI reads every one</h3>
+        <p>Each review is scored for sentiment and grouped into themes, so the noise turns into patterns you can actually use.</p>
+        <svg class="arrow" width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="step">
+        <div class="num">4</div>
+        <h3>You get answers</h3>
+        <p>A live dashboard, a brand-versus-brand compare, and a chat that answers questions and links back to the real reviews.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-head">
+      <h2>What you get</h2>
+      <p>Three ways to read the room, all pointed at the same trustworthy reviews.</p>
+    </div>
+    <div class="value">
+      <div class="card">
+        <div class="tagline">Dashboard</div>
+        <h3>The big picture</h3>
+        <p>Totals, average rating, sentiment split, where reviews come from, and an AI summary of the loves and the gripes.</p>
+      </div>
+      <div class="card">
+        <div class="tagline">Compare</div>
+        <h3>Brand versus brand</h3>
+        <p>Put two brands side by side and see who is more loved, who rates higher, and who gets talked about more.</p>
+      </div>
+      <div class="card">
+        <div class="tagline">Chat</div>
+        <h3>Just ask</h3>
+        <p>Ask what people complain about most, or how the app holds up. Every answer cites the real reviews behind it.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-head">
+      <h2>Under the hood</h2>
+      <p>A quick look, for the curious. Nothing you need to touch.</p>
+    </div>
+    <div class="stack">
+      <div class="pipe">
+        <span class="node">Custom collectors</span><span class="sep">to</span>
+        <span class="node">Snowflake store</span><span class="sep">to</span>
+        <span class="node">Local AI embeddings and sentiment</span><span class="sep">to</span>
+        <span class="node">Claude answers with citations</span>
+      </div>
+      <p>Reviews are collected, cleaned, and saved. An on-device AI model turns each review into numbers a computer can search, and scores its mood. When you ask a question, ReviewBay finds the most relevant reviews and asks Claude to answer using only those, always pointing back to the source.</p>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-head">
+      <h2>Questions, answered</h2>
+    </div>
+    <div class="faq">
+      <details open>
+        <summary>Where do the reviews come from?</summary>
+        <p>The open web, the Apple App Store, and Google Play. Each source has its own collector, and the web source can be pointed at a brand's real website so it finds the right company instead of a lookalike.</p>
+      </details>
+      <details>
+        <summary>Do I need to set anything up?</summary>
+        <p>No. Add a brand name and, if you have it, a website. Collection starts on its own and the dashboard fills in as reviews arrive.</p>
+      </details>
+      <details>
+        <summary>Where does the chat get its answers?</summary>
+        <p>Only from the reviews ReviewBay has collected. It does not guess from general knowledge, and every claim links back to the specific review it came from, so you can check it yourself.</p>
+      </details>
+      <details>
+        <summary>Will other people see the brands I test?</summary>
+        <p>No. The list of brands you add is remembered in your browser only, not on a shared server. If someone else opens ReviewBay on their own device, they start with a clean slate. (Full accounts are on the way.)</p>
+      </details>
+      <details>
+        <summary>How fresh is the data?</summary>
+        <p>Reviews refresh on a regular schedule in the background, so what you see keeps up with what customers are saying.</p>
+      </details>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="closer">
+      <h2>See what your customers are really saying</h2>
+      <p>It takes one brand name to start. No account, no setup.</p>
+      <a href="/start" class="btn">Add a brand</a>
+    </div>
+  </section>
+
+  <footer class="foot">ReviewBay. Reviews you can trust, because every answer shows its work.</footer>
+</main>
+</body>
+</html>

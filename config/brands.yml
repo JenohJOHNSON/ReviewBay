@@ -1,0 +1,38 @@
+# Brands to monitor. This is your control panel: add a brand, its keywords, and
+# which sources to scrape.
+#
+# sources: any of  web | app_store | google_play | reddit | google_maps | yelp
+#                 | tripadvisor | instagram | facebook
+#          app_store + google_play are FREE (no token — Apple's RSS feed and the
+#          google-play-scraper library, respectively).
+#          instagram/facebook are BEST-EFFORT (Meta blocks scraping) — if Apify
+#          returns nothing the pass just continues and `web` covers it. facebook
+#          also needs a page URL: env APIFY_FB_URL_<BRAND> (else it self-skips).
+#          The rest run through Apify on one token.
+#
+# 👉 FIRST TEST: we start with ONE brand and only the cheap "web" source, so a
+#    free Apify plan barely spends anything. Change the name below to the brand
+#    YOU want to track, then later add more sources / brands (examples at bottom).
+
+default_sources:
+  - web
+  - app_store
+  - google_play
+  - reddit
+  - google_maps
+  - yelp
+  - tripadvisor
+  - facebook
+
+brands:
+  - name: "Blue Bottle Coffee"       # ← CHANGE THIS to the brand you care about
+    keywords: ["Blue Bottle Coffee"]
+    # web = Apify · app_store/google_play = free. instagram removed for now.
+    sources: ["web", "app_store", "google_play"]
+    limit: 50                        # aim for at least 50 samples per source
+
+# ── Later, to go bigger, a brand can look like this: ──
+#  - name: "Your Brand"
+#    keywords: ["Your Brand", "YourBrandHandle"]
+#    sources: ["web", "reddit", "google_maps", "yelp"]
+#    limit: 50

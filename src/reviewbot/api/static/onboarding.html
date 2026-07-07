@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ReviewBay: Monitor any brand</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/theme.css">
+<script src="/static/brands.js"></script>
+<style>
+  .hero { text-align:center; margin:12px 0 28px; }
+  .hero h1 { font-size:34px; line-height:1.15; letter-spacing:-.02em; font-weight:800; margin:0 0 12px; }
+  .hero p { color:var(--muted); font-size:16px; max-width:520px; margin:0 auto; line-height:1.6; }
+  .field { margin-bottom:16px; }
+  .opt { font-size:11px; color:var(--muted); text-transform:none; letter-spacing:0; font-weight:400; }
+  .existing { margin-top:24px; text-align:center; }
+  .existing .lbl { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.05em; font-weight:600; margin-bottom:10px; }
+  .chip { display:inline-block; background:var(--surface); border:1px solid var(--line); border-radius:20px;
+          padding:8px 15px; margin:4px; font-size:14px; font-weight:500; color:var(--ink); }
+  .chip:hover { border-color:var(--accent); color:var(--accent); text-decoration:none; }
+  .steps { margin:8px 0 6px; }
+  .step { display:flex; align-items:center; gap:12px; padding:11px 0; font-size:15px; border-bottom:1px solid var(--line); }
+  .step:last-child { border-bottom:none; }
+  .dot { width:20px; height:20px; border-radius:50%; border:2px solid var(--line); flex:0 0 auto;
+         display:flex; align-items:center; justify-content:center; background:var(--surface); }
+  .dot.on { border-color:var(--pos); background:var(--pos); }
+  .dot.on::after { content:""; width:5px; height:9px; border:solid #fff; border-width:0 2px 2px 0; transform:rotate(45deg); margin-top:-1px; }
+  .dot.run { border-color:var(--accent); border-top-color:transparent; animation:spin .8s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .step .cnt { margin-left:auto; color:var(--muted); font-size:14px; }
+  .bignum { text-align:center; font-size:46px; font-weight:800; letter-spacing:-.02em; }
+  .bignum small { display:block; font-size:13px; color:var(--muted); font-weight:500; margin-top:2px; text-transform:uppercase; letter-spacing:.05em; }
+  .cta { margin-top:18px; }
+  .hidden { display:none; }
+  .err { color:var(--neg); text-align:center; }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a href="/" class="brand">ReviewBay</a>
+  <span class="sp"></span>
+  <nav class="nav">
+    <a href="/start" class="active">Add brand</a>
+    <a href="/dashboard">Dashboard</a>
+    <a href="/compare">Compare</a>
+    <a href="/chat">Chat</a>
+  </nav>
+</header>
+<main class="wrap narrow">
+  <div class="hero">
+    <h1>Monitor any brand's reputation</h1>
+    <p>Enter a brand and ReviewBay gathers reviews from across the web and the app stores, then tells you what customers really think.</p>
+  </div>
+
+  <div class="card" id="formCard">
+    <form id="form">
+      <div class="field">
+        <label for="brand">Brand name</label>
+        <input id="brand" placeholder="e.g. Blue Bottle Coffee" autocomplete="off" required />
+      </div>
+      <div class="field">
+        <label for="site">Website <span class="opt">optional, helps us find the right brand</span></label>
+        <input id="site" placeholder="e.g. bluebottlecoffee.com" autocomplete="off" />
+      </div>
+      <button id="go" class="btn block" type="submit">Start monitoring</button>
+    </form>
+    <div class="existing hidden" id="existing">
+      <div class="lbl">Your brands</div>
+      <div id="chips"></div>
+    </div>
+  </div>
+
+  <div class="card hidden" id="progCard">
+    <div class="bignum"><span id="count">0</span><small id="phaseLbl">starting</small></div>
+    <div class="steps" id="steps"></div>
+    <div id="cta" class="cta hidden">
+      <button id="openDash" class="btn block" type="button">Open dashboard</button>
+    </div>
+    <div id="progErr" class="err hidden">Something went wrong while collecting. <a href="#" id="retry">Try again</a></div>
+  </div>
+</main>
+<script>
+const SOURCES = [
+  { key:'web',         label:'Web mentions' },
+  { key:'app_store',   label:'App Store' },
+  { key:'google_play', label:'Google Play' },
+];
+const $ = id => document.getElementById(id);
+function esc(s){ return (s||'').toString().replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+let currentBrand = null, poll = null;
+
+function loadExisting(){
+  // The brand list lives in this browser only (localStorage), so a fresh
+  // visitor starts clean and never sees what someone else has tested.
+  const brands = window.RB_Brands ? RB_Brands.list() : [];
+  if(!brands.length) return;
+  $('chips').innerHTML = brands.map(b => `<a class="chip" href="/dashboard?brand=${encodeURIComponent(b)}">${esc(b)}</a>`).join('');
+  $('existing').classList.remove('hidden');
+}
+
+function renderSteps(job){
+  const done = job.status === 'done';
+  const analyzing = job.phase === 'analyzing' || done;
+  const rows = SOURCES.map(s => {
+    const has = job.sources && (s.key in job.sources);
+    const cls = has ? 'dot on' : (job.status==='collecting' && !analyzing ? 'dot run' : 'dot');
+    const cnt = has ? `${job.sources[s.key]} found` : '<span class="muted">waiting</span>';
+    return `<div class="step"><span class="${cls}"></span> ${s.label} <span class="cnt">${cnt}</span></div>`;
+  }).join('');
+  const aCls = done ? 'dot on' : (analyzing ? 'dot run' : 'dot');
+  const analyzeRow = `<div class="step"><span class="${aCls}"></span> Analyzing sentiment and themes <span class="cnt"></span></div>`;
+  $('steps').innerHTML = rows + analyzeRow;
+  $('count').textContent = job.collected || 0;
+  $('phaseLbl').textContent = done ? 'reviews ready' :
+      job.phase==='analyzing' ? 'analyzing' : 'reviews collected so far';
+}
+
+async function tick(){
+  try {
+    const job = await (await fetch(`/api/brands/${encodeURIComponent(currentBrand)}/status`)).json();
+    if(job.status === 'error'){ clearInterval(poll); $('progErr').classList.remove('hidden'); return; }
+    renderSteps(job);
+    if(job.status === 'done'){
+      clearInterval(poll);
+      $('cta').classList.remove('hidden');
+    }
+  } catch(e){}
+}
+
+$('form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const name = $('brand').value.trim();
+  if(!name) return;
+  const website = $('site').value.trim() || null;
+  $('go').disabled = true; $('go').textContent = 'Starting';
+  try {
+    const res = await fetch('/api/brands', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ name, website })
+    });
+    const data = await res.json();
+    currentBrand = data.brand || name;
+    if (window.RB_Brands) RB_Brands.add(currentBrand);  // remember in this browser
+    $('formCard').classList.add('hidden');
+    $('progCard').classList.remove('hidden');
+    $('openDash').onclick = () => location.href = '/dashboard?brand=' + encodeURIComponent(currentBrand);
+    renderSteps({ status:'collecting', phase:'scraping', collected:0, sources:{} });
+    tick();
+    poll = setInterval(tick, 1500);
+  } catch(err) {
+    $('go').disabled = false; $('go').textContent = 'Start monitoring';
+    alert('Could not start: ' + err);
+  }
+});
+$('retry')?.addEventListener('click', (e)=>{ e.preventDefault(); location.reload(); });
+
+loadExisting();
+</script>
+</body>
+</html>

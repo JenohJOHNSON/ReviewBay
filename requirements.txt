@@ -1,0 +1,19 @@
+# Shared dependencies for both the ingestion worker and the API.
+# Pinned loosely; tighten before production.
+
+# --- ingestion ---
+apify-client>=1.7            # Reddit / Google Maps / Yelp / TripAdvisor / web actors
+google-play-scraper>=1.2     # Google Play reviews (free, no key/token)
+requests>=2.31              # App Store (Apple RSS feed) + Google Play HTML fallback
+snowflake-connector-python>=3.12
+PyYAML>=6.0
+
+# --- embeddings + sentiment (local, free — replaces Snowflake Cortex) ---
+fastembed>=0.3             # local text->vector model (no GPU, no API)
+vaderSentiment>=3.3        # local sentiment scoring
+
+# --- api / rag ---
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7
+anthropic>=0.40             # Claude — RAG generation with citations
