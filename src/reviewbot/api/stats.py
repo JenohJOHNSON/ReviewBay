@@ -1,4 +1,4 @@
-"""Aggregations for the dashboard — all from MARTS.REVIEWS (no scraping cost).
+"""Aggregations for the dashboard, all from marts.reviews (no scraping cost).
 
 Returns one JSON blob the dashboard page renders: totals, sentiment split,
 source mix, per-brand counts, average rating, and the latest negative reviews.
@@ -7,9 +7,9 @@ Optional brand filter narrows everything except the brand list.
 
 from __future__ import annotations
 
-import os
+from .. import db
 
-_WHERE = "(%(brand)s IS NULL OR brand ILIKE %(brand)s)"
+_WHERE = "((%(brand)s)::text IS NULL OR brand ILIKE (%(brand)s)::text)"
 
 # Whitelisted sort orders for the reviews list. Only these keys are accepted from
 # the API, so the clause can be interpolated safely (no SQL injection surface).
@@ -24,17 +24,15 @@ _SORTS = {
 
 
 def _connect():
-    import snowflake.connector  # type: ignore
+    return db.connect()
 
-    return snowflake.connector.connect(
-        account=os.environ["SNOWFLAKE_ACCOUNT"],
-        user=os.environ["SNOWFLAKE_USER"],
-        password=os.environ.get("SNOWFLAKE_PASSWORD"),
-        role=os.environ.get("SNOWFLAKE_ROLE"),
-        warehouse=os.environ.get("SNOWFLAKE_WAREHOUSE"),
-        database=os.environ.get("SNOWFLAKE_DATABASE", "REVIEWBOT"),
-        schema="MARTS",
-    )
+
+def _cols(cur) -> list[str]:
+    cols = []
+    for c in cur.description:
+        name = getattr(c, "name", None)
+        cols.append((name if name is not None else c[0]).lower())
+    return cols
 
 
 def get_stats(brand: str | None = None) -> dict:
@@ -43,25 +41,25 @@ def get_stats(brand: str | None = None) -> dict:
     try:
         cur = conn.cursor()
 
-        cur.execute(f"SELECT COUNT(*) FROM MARTS.REVIEWS WHERE {_WHERE}", b)
+        cur.execute(f"SELECT COUNT(*) FROM marts.reviews WHERE {_WHERE}", b)
         total = cur.fetchone()[0]
 
         sentiment = {"positive": 0, "neutral": 0, "negative": 0}
         cur.execute(
-            f"SELECT sentiment, COUNT(*) FROM MARTS.REVIEWS WHERE {_WHERE} GROUP BY sentiment", b
+            f"SELECT sentiment, COUNT(*) FROM marts.reviews WHERE {_WHERE} GROUP BY sentiment", b
         )
         for s, c in cur.fetchall():
             if s in sentiment:
                 sentiment[s] = c
 
         cur.execute(
-            f"SELECT source, COUNT(*) FROM MARTS.REVIEWS WHERE {_WHERE} GROUP BY source ORDER BY 2 DESC",
+            f"SELECT source, COUNT(*) FROM marts.reviews WHERE {_WHERE} GROUP BY source ORDER BY 2 DESC",
             b,
         )
         by_source = [{"source": s, "count": c} for s, c in cur.fetchall()]
 
         cur.execute(
-            f"SELECT AVG(rating) FROM MARTS.REVIEWS WHERE rating IS NOT NULL AND {_WHERE}", b
+            f"SELECT AVG(rating) FROM marts.reviews WHERE rating IS NOT NULL AND {_WHERE}", b
         )
         ar = cur.fetchone()[0]
         avg_rating = round(float(ar), 2) if ar is not None else None
@@ -69,14 +67,14 @@ def get_stats(brand: str | None = None) -> dict:
         cur.execute(
             f"""
             SELECT text, source, source_url, author, rating, brand, captured_at
-            FROM MARTS.REVIEWS
+            FROM marts.reviews
             WHERE sentiment = 'negative' AND {_WHERE}
             ORDER BY captured_at DESC
             LIMIT 12
             """,
             b,
         )
-        cols = [c[0].lower() for c in cur.description]
+        cols = _cols(cur)
         recent_negative = []
         for row in cur.fetchall():
             r = dict(zip(cols, row))
@@ -105,23 +103,23 @@ def _brand_block(cur, brand: str) -> dict:
     """One brand's slice for the compare view: count, sentiment, rating, sources."""
     b = {"brand": brand}
 
-    cur.execute(f"SELECT COUNT(*) FROM MARTS.REVIEWS WHERE {_WHERE}", b)
+    cur.execute(f"SELECT COUNT(*) FROM marts.reviews WHERE {_WHERE}", b)
     total = cur.fetchone()[0]
 
     sentiment = {"positive": 0, "neutral": 0, "negative": 0}
     cur.execute(
-        f"SELECT sentiment, COUNT(*) FROM MARTS.REVIEWS WHERE {_WHERE} GROUP BY sentiment", b
+        f"SELECT sentiment, COUNT(*) FROM marts.reviews WHERE {_WHERE} GROUP BY sentiment", b
     )
     for s, c in cur.fetchall():
         if s in sentiment:
             sentiment[s] = c
 
-    cur.execute(f"SELECT AVG(rating) FROM MARTS.REVIEWS WHERE rating IS NOT NULL AND {_WHERE}", b)
+    cur.execute(f"SELECT AVG(rating) FROM marts.reviews WHERE rating IS NOT NULL AND {_WHERE}", b)
     ar = cur.fetchone()[0]
     avg_rating = round(float(ar), 2) if ar is not None else None
 
     cur.execute(
-        f"SELECT source, COUNT(*) FROM MARTS.REVIEWS WHERE {_WHERE} GROUP BY source ORDER BY 2 DESC",
+        f"SELECT source, COUNT(*) FROM marts.reviews WHERE {_WHERE} GROUP BY source ORDER BY 2 DESC",
         b,
     )
     by_source = [{"source": s, "count": c} for s, c in cur.fetchall()]
@@ -163,14 +161,14 @@ def get_reviews(brand: str | None = None, sort: str = "recent", limit: int = 40)
         cur.execute(
             f"""
             SELECT text, source, source_url, author, rating, brand, sentiment, captured_at
-            FROM MARTS.REVIEWS
+            FROM marts.reviews
             WHERE {_WHERE}
             ORDER BY {order}
             LIMIT {limit}
             """,
             {"brand": brand},
         )
-        cols = [c[0].lower() for c in cur.description]
+        cols = _cols(cur)
         reviews = []
         for row in cur.fetchall():
             r = dict(zip(cols, row))

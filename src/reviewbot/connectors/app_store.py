@@ -1,12 +1,11 @@
 """Apple App Store reviews — via Apple's free, official RSS feed.
 
-No API key, no scraping, no Airbyte. Two public Apple endpoints:
+No API key and no scraping. Two public Apple endpoints:
   1. iTunes Search API    -> find the app's numeric id from the brand name
   2. Customer Reviews RSS  -> that app's recent reviews (50/page, up to ~500)
 
 Both are documented Apple endpoints returning JSON, so the field mapping here is
-VALIDATED against live output (2026-07) — unlike the Apify review actors. This is
-the free, reliable replacement for the (heavier, undeployed) Airbyte app path.
+VALIDATED against live output (2026-07) — unlike the Apify review actors.
 
 Per-brand override (optional): set env APP_STORE_ID_<BRAND> to pin an exact app
 and skip the search, e.g. APP_STORE_ID_BLUE_BOTTLE_COFFEE=1440573734. Otherwise

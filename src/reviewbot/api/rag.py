@@ -1,8 +1,8 @@
-"""Retrieval-augmented generation over the reviews in Snowflake.
+"""Retrieval-augmented generation over the reviews in Neon Postgres.
 
 Two steps:
-  1. RETRIEVE — embed the user's question with Snowflake Cortex and rank the
-     stored reviews by vector cosine similarity (all in-database, one query).
+  1. RETRIEVE — embed the user's question locally and rank stored reviews with
+     pgvector cosine distance.
   2. GENERATE — hand the top reviews to Claude with a system prompt that forces
      an answer grounded in those reviews *with inline source links*. The
      citations are the whole point of the product, so they are a hard
@@ -16,6 +16,9 @@ import logging
 import os
 from dataclasses import dataclass
 
+from psycopg.rows import dict_row
+
+from .. import db
 from .. import embeddings
 
 log = logging.getLogger(__name__)
@@ -23,20 +26,17 @@ log = logging.getLogger(__name__)
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5")
 TOP_K = int(os.environ.get("RAG_TOP_K", "8"))
 
-# Rank MARTS.REVIEWS by similarity to the question. We embed the question in
-# Python with the SAME local model used to build the stored vectors (so they're
-# comparable), then Snowflake does only the vector math — no Cortex, so this
-# works on trial accounts. Optional brand filter narrows to one brand.
+# Rank marts.reviews by similarity to the question. We embed the question in
+# Python with the SAME local model used to build the stored vectors, then
+# Postgres/pgvector does the vector math. Optional brand filter narrows to one
+# brand.
 _SEARCH_SQL = """
 SELECT
     text, source, source_url, author, rating, brand, sentiment,
-    VECTOR_COSINE_SIMILARITY(
-        embedding,
-        PARSE_JSON(%(qvec)s)::VECTOR(FLOAT, 768)
-    ) AS score
-FROM MARTS.REVIEWS
-WHERE (%(brand)s IS NULL OR brand ILIKE %(brand)s)
-ORDER BY score DESC
+    1 - (embedding <=> (%(qvec)s)::vector) AS score
+FROM marts.reviews
+WHERE ((%(brand)s)::text IS NULL OR brand ILIKE (%(brand)s)::text)
+ORDER BY embedding <=> (%(qvec)s)::vector
 LIMIT %(k)s
 """
 
@@ -60,17 +60,7 @@ class Answer:
 
 
 def _connect():
-    import snowflake.connector  # type: ignore
-
-    return snowflake.connector.connect(
-        account=os.environ["SNOWFLAKE_ACCOUNT"],
-        user=os.environ["SNOWFLAKE_USER"],
-        password=os.environ.get("SNOWFLAKE_PASSWORD"),
-        role=os.environ.get("SNOWFLAKE_ROLE"),
-        warehouse=os.environ.get("SNOWFLAKE_WAREHOUSE"),
-        database=os.environ.get("SNOWFLAKE_DATABASE", "REVIEWBOT"),
-        schema="MARTS",
-    )
+    return db.connect(row_factory=dict_row)
 
 
 def retrieve(question: str, brand: str | None = None, k: int = TOP_K) -> list[Source]:
@@ -86,8 +76,7 @@ def retrieve(question: str, brand: str | None = None, k: int = TOP_K) -> list[So
                     "k": k,
                 },
             )
-            cols = [c[0].lower() for c in cur.description]
-            return [Source(**dict(zip(cols, row))) for row in cur.fetchall()]
+            return [Source(**dict(row)) for row in cur.fetchall()]
     finally:
         conn.close()
 

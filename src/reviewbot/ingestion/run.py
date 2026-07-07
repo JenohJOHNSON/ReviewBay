@@ -27,7 +27,7 @@ from ..connectors import (
     GooglePlayConnector,
     GoogleSearchConnector,
 )
-from . import snowflake_loader
+from . import postgres_loader
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -118,13 +118,13 @@ def run_source(source_name: str, config: dict | None = None) -> int:
         keywords = brand_cfg.get("keywords", [brand])
         limit = int(brand_cfg.get("limit", default_limit))
         reviews = list(connector.fetch(brand, keywords, limit, website=brand_cfg.get("website")))
-        total += snowflake_loader.load(reviews)
+        total += postgres_loader.load(reviews)
     log.info("source=%s upserted %d reviews", source_name, total)
     return total
 
 
 def run_brand(brand_cfg: dict, on_progress=None) -> int:
-    """Scrape ONE brand across its enabled sources into RAW. Returns rows written.
+    """Scrape ONE brand across its enabled sources into raw. Returns rows written.
 
     The onboarding flow calls this to collect a just-added brand immediately. The
     optional on_progress(source_name, written, running_total) callback lets the
@@ -139,7 +139,7 @@ def run_brand(brand_cfg: dict, on_progress=None) -> int:
     for connector in build_connectors(enabled):
         try:
             reviews = list(connector.fetch(brand, keywords, limit, website=brand_cfg.get("website")))
-            written = snowflake_loader.load(reviews)
+            written = postgres_loader.load(reviews)
         except Exception:  # noqa: BLE001
             log.exception("brand=%s source=%s failed — skipping", brand, connector.source_name)
             written = 0
@@ -165,7 +165,7 @@ def run_once(config: dict) -> int:
         for connector in build_connectors(enabled):
             log.info("fetching brand=%s source=%s", brand, connector.source_name)
             reviews = list(connector.fetch(brand, keywords, limit, website=brand_cfg.get("website")))
-            written = snowflake_loader.load(reviews)
+            written = postgres_loader.load(reviews)
             total += written
     return total
 

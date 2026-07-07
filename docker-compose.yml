@@ -1,8 +1,8 @@
 # ReviewBay — two services, both dockerized.
-#   ingestion : scrapes each source on a loop and MERGEs into Snowflake RAW
-#   api       : FastAPI RAG chatbot over Snowflake MARTS (Cortex + Claude)
+#   ingestion : scrapes each source on a loop and upserts into Neon Postgres
+#   api       : FastAPI RAG chatbot over Neon/pgvector + Claude
 #
-# Snowflake and Claude are managed/cloud, so there's no DB container here.
+# Neon Postgres and Claude are managed/cloud, so there's no DB container here.
 # The event bus (Kafka/Redpanda) is intentionally NOT included in v1 — add it
 # only when 15-min freshness isn't enough.
 

@@ -15,13 +15,15 @@ import re
 import threading
 import time
 
+from .. import db
+
 log = logging.getLogger(__name__)
 
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5")
 INSIGHTS_TTL = int(os.environ.get("INSIGHTS_TTL", "900"))       # cache 15 min
 INSIGHTS_SAMPLE = int(os.environ.get("INSIGHTS_SAMPLE", "60"))  # reviews per call
 
-_WHERE = "(%(brand)s IS NULL OR brand ILIKE %(brand)s)"
+_WHERE = "((%(brand)s)::text IS NULL OR brand ILIKE (%(brand)s)::text)"
 _CACHE: dict[str, tuple[float, dict]] = {}
 _LOCK = threading.Lock()
 
@@ -80,17 +82,15 @@ _REPORT_TOOL = {
 
 
 def _connect():
-    import snowflake.connector  # type: ignore
+    return db.connect()
 
-    return snowflake.connector.connect(
-        account=os.environ["SNOWFLAKE_ACCOUNT"],
-        user=os.environ["SNOWFLAKE_USER"],
-        password=os.environ.get("SNOWFLAKE_PASSWORD"),
-        role=os.environ.get("SNOWFLAKE_ROLE"),
-        warehouse=os.environ.get("SNOWFLAKE_WAREHOUSE"),
-        database=os.environ.get("SNOWFLAKE_DATABASE", "REVIEWBOT"),
-        schema="MARTS",
-    )
+
+def _cols(cur) -> list[str]:
+    cols = []
+    for c in cur.description:
+        name = getattr(c, "name", None)
+        cols.append((name if name is not None else c[0]).lower())
+    return cols
 
 
 def _sample_reviews(brand: str | None) -> list[dict]:
@@ -100,14 +100,14 @@ def _sample_reviews(brand: str | None) -> list[dict]:
             cur.execute(
                 f"""
                 SELECT text, source, rating, sentiment
-                FROM MARTS.REVIEWS
+                FROM marts.reviews
                 WHERE {_WHERE} AND text IS NOT NULL
                 ORDER BY captured_at DESC
                 LIMIT %(n)s
                 """,
                 {"brand": brand, "n": INSIGHTS_SAMPLE},
             )
-            cols = [c[0].lower() for c in cur.description]
+            cols = _cols(cur)
             return [dict(zip(cols, r)) for r in cur.fetchall()]
     finally:
         conn.close()

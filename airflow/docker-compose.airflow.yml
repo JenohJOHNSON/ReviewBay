@@ -2,27 +2,23 @@
 # Run from the repo root:
 #   docker compose -f airflow/docker-compose.airflow.yml up --build
 #
-# Reuses the project's .env for source + Snowflake creds. The Airflow Snowflake
-# connection is provided via AIRFLOW_CONN_SNOWFLAKE_DEFAULT (see .env.example).
+# Reuses the project's .env for source + Neon Postgres creds.
 
 x-airflow-common: &airflow-common
   build:
     context: ..                      # repo root, so the image can COPY src/
     dockerfile: airflow/Dockerfile
-  env_file: ../.env                  # Reddit / Apify / Snowflake creds for scrapers
+  env_file: ../.env                  # Apify / Neon / Claude creds for tasks
   environment: &airflow-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
-    # Airflow Snowflake connection used by the SQL operators (set in .env):
-    AIRFLOW_CONN_SNOWFLAKE_DEFAULT: ${AIRFLOW_CONN_SNOWFLAKE_DEFAULT}
     # Where the DAG reads brands from (mounted below):
     BRANDS_CONFIG: /opt/airflow/config/brands.yml
     PYTHONPATH: /opt/airflow/project_src
   volumes:
     - ./dags:/opt/airflow/dags
-    - ../snowflake:/opt/airflow/sql:ro     # normalize_airbyte.sql, transform.sql
     - ../config:/opt/airflow/config:ro     # brands.yml
     - airflow-logs:/opt/airflow/logs
   depends_on:

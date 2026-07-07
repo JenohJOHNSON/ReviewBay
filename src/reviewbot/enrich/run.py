@@ -1,10 +1,8 @@
-"""Enrich RAW reviews into MARTS: add real embeddings + sentiment (in Python).
+"""Enrich raw reviews into marts: add embeddings + sentiment in Python.
 
-This replaces the old Cortex-based transform.sql. It reads reviews from
-RAW.REVIEWS_RAW that aren't in MARTS.REVIEWS yet, computes each one's embedding
-and sentiment locally (see embeddings.py), and MERGEs them into MARTS with the
-vector stored in the VECTOR(FLOAT, 768) column. The chatbot then searches MARTS
-with VECTOR_COSINE_SIMILARITY (which works on Snowflake trials).
+It reads reviews from raw.reviews_raw that aren't in marts.reviews yet, computes
+each one's embedding and sentiment locally (see embeddings.py), and upserts them
+into marts.reviews with the vector stored in a pgvector vector(768) column.
 
 Run standalone (`python -m reviewbot.enrich.run`), from the ingestion loop, or
 as an Airflow task.
@@ -16,6 +14,9 @@ import json
 import logging
 import os
 
+from psycopg.rows import dict_row
+
+from .. import db
 from .. import embeddings
 
 log = logging.getLogger(__name__)
@@ -29,54 +30,37 @@ BATCH = int(os.environ.get("ENRICH_BATCH", "32"))
 _SELECT_PENDING = """
 SELECT r.id, r.brand, r.source, r.source_url, r.author, r.rating, r.text,
        r.created_at, r.captured_at, m.id AS existing_id
-FROM RAW.REVIEWS_RAW r
-LEFT JOIN MARTS.REVIEWS m ON m.id = r.id
+FROM raw.reviews_raw r
+LEFT JOIN marts.reviews m ON m.id = r.id
 WHERE m.id IS NULL OR m.text <> r.text
 LIMIT %(batch)s
 """
 
-# Store the vector by parsing a JSON array and casting to VECTOR. This avoids any
-# Cortex call — Snowflake just accepts the numbers we computed in Python.
-_MERGE = """
-MERGE INTO MARTS.REVIEWS AS tgt
-USING (
-    SELECT
-        %(id)s AS id, %(brand)s AS brand, %(source)s AS source,
-        %(source_url)s AS source_url, %(author)s AS author, %(rating)s AS rating,
-        %(text)s AS text, %(sentiment)s AS sentiment,
-        %(created_at)s AS created_at, %(captured_at)s AS captured_at,
-        PARSE_JSON(%(embedding)s)::VECTOR(FLOAT, 768) AS embedding
-) AS src
-ON tgt.id = src.id
-WHEN MATCHED THEN UPDATE SET
-    text = src.text, rating = src.rating, sentiment = src.sentiment,
-    embedding = src.embedding, captured_at = src.captured_at
-WHEN NOT MATCHED THEN INSERT
-    (id, brand, source, source_url, author, rating, text, sentiment,
-     created_at, captured_at, embedding)
-    VALUES
-    (src.id, src.brand, src.source, src.source_url, src.author, src.rating,
-     src.text, src.sentiment, src.created_at, src.captured_at, src.embedding);
+_UPSERT = """
+INSERT INTO marts.reviews (
+    id, brand, source, source_url, author, rating, text, sentiment,
+    created_at, captured_at, embedding
+) VALUES (
+    %(id)s, %(brand)s, %(source)s, %(source_url)s, %(author)s, %(rating)s,
+    %(text)s, %(sentiment)s, %(created_at)s, %(captured_at)s, (%(embedding)s)::vector
+)
+ON CONFLICT (id) DO UPDATE SET
+    text = EXCLUDED.text,
+    rating = EXCLUDED.rating,
+    sentiment = EXCLUDED.sentiment,
+    embedding = EXCLUDED.embedding,
+    captured_at = EXCLUDED.captured_at
 """
 
 
 def _connect():
-    import snowflake.connector  # type: ignore
-
-    return snowflake.connector.connect(
-        account=os.environ["SNOWFLAKE_ACCOUNT"],
-        user=os.environ["SNOWFLAKE_USER"],
-        password=os.environ.get("SNOWFLAKE_PASSWORD"),
-        role=os.environ.get("SNOWFLAKE_ROLE"),
-        warehouse=os.environ.get("SNOWFLAKE_WAREHOUSE"),
-        database=os.environ.get("SNOWFLAKE_DATABASE", "REVIEWBOT"),
-    )
+    return db.connect(row_factory=dict_row)
 
 
 def enrich() -> int:
-    """Embed + score pending reviews into MARTS. Returns rows written.
+    """Embed + score pending reviews into marts. Returns rows written.
 
-    Loops in batches until RAW is fully caught up.
+    Loops in batches until raw is fully caught up.
     """
     conn = _connect()
     total = 0
@@ -85,8 +69,7 @@ def enrich() -> int:
         while True:
             with conn.cursor() as cur:
                 cur.execute(_SELECT_PENDING, {"batch": BATCH})
-                cols = [c[0].lower() for c in cur.description]
-                rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+                rows = [dict(r) for r in cur.fetchall()]
             if not rows:
                 break
 
@@ -110,7 +93,7 @@ def enrich() -> int:
                     )
 
             with conn.cursor() as cur:
-                cur.executemany(_MERGE, params)
+                cur.executemany(_UPSERT, params)
             conn.commit()
             total += len(params)
             log.info("enriched %d reviews (running total %d)", len(params), total)
@@ -120,7 +103,7 @@ def enrich() -> int:
     finally:
         conn.close()
 
-    log.info("enrichment complete: %d reviews into MARTS", total)
+    log.info("enrichment complete: %d reviews into marts.reviews", total)
 
     if new_negatives:  # push alerts for brand-new negatives (non-fatal; off unless configured)
         try:

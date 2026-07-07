@@ -1,14 +1,11 @@
-"""Local, free text embeddings + sentiment — no Snowflake Cortex needed.
+"""Local, free text embeddings + sentiment.
 
-Snowflake's free trial blocks all SNOWFLAKE.CORTEX.* AI functions (SENTIMENT,
-EMBED_TEXT_768, ...). So we compute the "text -> numbers" step here in the app
-with a small local model, store the resulting vectors in Snowflake, and let
-Snowflake do only the vector *math* (VECTOR_COSINE_SIMILARITY), which trials
-allow. This is also a perfectly normal production design — embedding outside the
-warehouse is common.
+We compute the "text -> numbers" step in the app with a small local model, store
+the resulting vectors in Neon Postgres, and let pgvector do the vector math.
+Embedding outside the database keeps the setup free and portable.
 
-Swap EMBED_MODEL for any fastembed model, but keep the Snowflake VECTOR(...)
-dimension in sync (arctic-embed-m = 768, matching snowflake/ddl.sql).
+Swap EMBED_MODEL for any fastembed model, but keep the Postgres vector(...)
+dimension in sync (arctic-embed-m = 768, matching postgres/schema.sql).
 """
 
 from __future__ import annotations
@@ -49,7 +46,7 @@ def _sentiment_analyzer():
 
 
 def sentiment_bucket(text: str) -> str:
-    """Coarse positive/neutral/negative bucket, the same shape Cortex gave us."""
+    """Coarse positive/neutral/negative bucket."""
     score = _sentiment_analyzer().polarity_scores(text or "")["compound"]
     if score > 0.3:
         return "positive"
