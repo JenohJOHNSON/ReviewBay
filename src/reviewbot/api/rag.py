@@ -265,7 +265,7 @@ def answer(question: str, brand: str | None = None, brands: list[str] | None = N
         return Answer(
             answer=(
                 "ReviewBay is running, but the review database is not configured yet. "
-                "Set DATABASE_URL to your Neon Postgres URL, run postgres/schema.sql, "
+                "Set DATABASE_URL to your Neon Postgres URL, run postgres/ddl.sql, "
                 "then restart the API and worker."
             ),
             sources=[],

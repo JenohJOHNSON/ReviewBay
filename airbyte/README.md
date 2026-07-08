@@ -14,7 +14,7 @@ opt-in.
 ```
 Apify actor -> dataset -> Airbyte "Apify Dataset" source -> Neon airbyte.<table>
                                                                   |
-                                  python -m reviewbot.ingestion.airbyte_sync
+                                  python -m reviewbot.worker
                                                                   v
                                      raw.reviews_raw -> marts.reviews -> chat
 ```
@@ -43,12 +43,12 @@ Apify actor -> dataset -> Airbyte "Apify Dataset" source -> Neon airbyte.<table>
    ```
 6. **Run the worker** after each sync (or schedule it):
    ```bash
-   python -m reviewbot.ingestion.airbyte_sync
+   RUN_ONCE=1 python -m reviewbot.worker
    ```
 
 ## How the mapping works
 
-`airbyte_normalize.py` reads each configured `airbyte.<table>`, pulls the original
+`src/reviewbot/airbyte/normalize.py` reads each configured `airbyte.<table>`, pulls the original
 Apify item out of the row (a `_airbyte_data` jsonb column, or the typed columns if
 the destination expanded them), and passes it to the matching mapper in
 `connectors/apify_source.py`. The field mapping is therefore shared with the live

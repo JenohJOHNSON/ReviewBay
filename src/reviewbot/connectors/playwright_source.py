@@ -54,9 +54,10 @@ class TrustpilotConnector(BaseConnector):
 
         try:
             from playwright.sync_api import sync_playwright  # type: ignore
-        except Exception:  # noqa: BLE001 (browser not installed: disable cleanly)
+            from selectolax.parser import HTMLParser  # type: ignore
+        except Exception:  # noqa: BLE001 (optional deps not installed: disable cleanly)
             log.warning(
-                "trustpilot: playwright not installed (pip install playwright && "
+                "trustpilot: optional deps missing (pip install playwright selectolax && "
                 "playwright install chromium); skipping"
             )
             return
@@ -78,7 +79,7 @@ class TrustpilotConnector(BaseConnector):
                         log.exception("trustpilot: failed to load %s", page_url)
                         break
 
-                    reviews = _parse_html(brand, html)
+                    reviews = _parse_html(brand, html, HTMLParser)
                     if not reviews:
                         break  # no more cards (past the last page)
                     for review in reviews:
@@ -91,14 +92,15 @@ class TrustpilotConnector(BaseConnector):
                 browser.close()
 
 
-def _parse_html(brand: str, html: str) -> list[NormalizedReview]:
+def _parse_html(brand: str, html: str, parser_cls=None) -> list[NormalizedReview]:
     """Parse Trustpilot review cards out of a rendered page into NormalizedReview.
 
     Kept separate from the browser so it is unit-testable with static HTML.
     """
-    from selectolax.parser import HTMLParser  # type: ignore
+    if parser_cls is None:
+        from selectolax.parser import HTMLParser as parser_cls  # type: ignore
 
-    tree = HTMLParser(html)
+    tree = parser_cls(html)
     cards = tree.css(
         "article[data-service-review-card-paper], "
         'article[class*="reviewCard"], [class*="styles_reviewCard"]'

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Verify the app can reach Neon Postgres + pgvector.
 
-Run after postgres/schema.sql:
+Run after postgres/ddl.sql:
 
     pip install "psycopg[binary]"
     set -a && source .env && set +a
@@ -48,7 +48,7 @@ def main() -> int:
             cur.execute("SELECT extversion FROM pg_extension WHERE extname = 'vector'")
             row = cur.fetchone()
             if not row:
-                print("FAIL: pgvector is not enabled. Run postgres/schema.sql.")
+                print("FAIL: pgvector is not enabled. Run postgres/ddl.sql.")
                 return 1
             print(f"OK  pgvector enabled: version={row[0]}")
 
@@ -65,7 +65,7 @@ def main() -> int:
         return 0
     except Exception as e:  # noqa: BLE001
         print(f"FAIL: {type(e).__name__}: {e}")
-        print("Hints: run postgres/schema.sql, confirm DATABASE_URL includes sslmode=require, "
+        print("Hints: run postgres/ddl.sql, confirm DATABASE_URL includes sslmode=require, "
               "and make sure your Neon project is awake.")
         return 1
     finally:

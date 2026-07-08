@@ -21,9 +21,10 @@ from ..ingestion.collect import FREE_PLAN, collect_until
 
 log = logging.getLogger(__name__)
 
-# Onboarding collects from every free source, then broadens and (last resort)
-# reaches walled gardens via Apify, all handled by collect_until. The persisted
-# source list is the free plan so future poll passes keep refreshing broadly.
+# Onboarding collects from cloud-safe free sources, then broadens and (last
+# resort) reaches walled gardens via Apify, all handled by collect_until. The
+# persisted source list is the same plan so future poll passes stay quiet on
+# Railway while still refreshing broadly.
 ONBOARD_SOURCES = list(FREE_PLAN)
 ONBOARD_LIMIT = int(os.environ.get("ONBOARD_LIMIT", "50"))
 

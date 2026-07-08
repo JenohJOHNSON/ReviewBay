@@ -105,11 +105,21 @@ def connector_statuses() -> list[dict]:
     do NOT expose implementation details (which actor/library, verification notes),
     just the user-facing on/off state.
     """
+    import importlib.util
     import os
 
     has_apify = bool(os.environ.get("APIFY_TOKENS") or os.environ.get("APIFY_TOKEN"))
     has_tavily = bool(os.environ.get("TAVILY_API_KEY"))
     has_firecrawl = bool(os.environ.get("FIRECRAWL_API_KEY"))
+    has_reddit_api = (
+        os.environ.get("REDDIT_USE_API") == "1"
+        and bool(os.environ.get("REDDIT_CLIENT_ID"))
+        and bool(os.environ.get("REDDIT_CLIENT_SECRET"))
+    )
+    has_trustpilot_libs = (
+        importlib.util.find_spec("playwright") is not None
+        and importlib.util.find_spec("selectolax") is not None
+    )
 
     def row(key, label, category, active):
         return {"key": key, "label": label, "category": category,
@@ -123,12 +133,12 @@ def connector_statuses() -> list[dict]:
         row("app_store", "App Store", "App Reviews", True),
         row("google_play", "Google Play", "App Reviews", True),
         # Review Sites
-        row("trustpilot", "Trustpilot", "Review Sites", True),  # self-hosted, no key
+        row("trustpilot", "Trustpilot", "Review Sites", has_trustpilot_libs),
         row("google_maps", "Google Maps", "Review Sites", has_apify),
         row("yelp", "Yelp", "Review Sites", has_apify),
         row("tripadvisor", "TripAdvisor", "Review Sites", has_apify),
-        # Social (Reddit / Mastodon / Hacker News are free and keyless)
-        row("reddit", "Reddit", "Social", True),
+        # Direct Reddit is opt-in; web search still host-tags reddit.com hits.
+        row("reddit", "Reddit", "Social", has_reddit_api),
         row("mastodon", "Mastodon", "Social", True),
         row("hackernews", "Hacker News", "Social", True),
         row("instagram", "Instagram", "Social", has_apify),

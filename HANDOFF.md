@@ -12,9 +12,9 @@ something meaningful changes.
 
 ReviewBay is a brand-reputation ETL pipeline plus RAG chatbot. It scrapes public
 reviews and mentions of a brand, stores them in Neon Postgres with pgvector,
-embeds them locally, and serves an OpenAI-powered chat that answers with links
-back to the original reviews, plus a dashboard with sentiment and a local-ML
-review summary. See `README.md` for the full description.
+embeds them through the OpenAI API, and serves an OpenAI-powered chat that
+answers with links back to the original reviews, plus a dashboard with sentiment
+and a local-ML review summary. See `README.md` for the full description.
 
 ## 2. Current stack (as running today)
 
@@ -23,15 +23,15 @@ review summary. See `README.md` for the full description.
 | Storage | Neon Postgres + pgvector | `raw.reviews_raw`, `marts.reviews` (vector(768), HNSW cosine) |
 | Embeddings | OpenAI `text-embedding-3-small` (768-dim) | API call; local fastembed removed (it OOM/crashed the cloud container) |
 | Sentiment | vaderSentiment | local |
-| Chat | OpenAI Responses API, `gpt-5.4-nano` | reasoning effort "low"; extractive fallback |
+| Chat | OpenAI Responses API, `gpt-4o-mini` by default | extractive fallback |
 | Insights | scikit-learn (TF-IDF + KMeans) | no LLM, deterministic |
 | Web search | Tavily (preferred) or Apify google-search | `web` source |
 | Deep scrape | Firecrawl | opt-in per brand |
 | Trustpilot | Playwright + Selectolax (self-hosted) | opt-in; no per-page fee; needs chromium |
 | App reviews | Apple RSS + google-play-scraper | free |
 | Other sites | Apify actors | Google Maps / Yelp / TripAdvisor / IG / FB |
-| API host | Railway | api-only; reads Neon, does not scrape |
-| Ingestion host | docker compose | local machine or an always-on box |
+| API host | Railway | serves the app and runs onboarding-time collection |
+| Worker host | docker compose / optional Railway service | Airbyte import, recurring local sources, enrichment |
 
 The previous warehouse stack was fully re-platformed to Neon/Postgres, pgvector,
 and OpenAI. Legacy warehouse and orchestration resources were removed from the
@@ -41,20 +41,23 @@ repo so the running path is the only path documented here.
 
 - **Code**: GitHub `javidjmg28/reviewbay`, branch `main`.
 - **API**: Railway (built from `docker/api.Dockerfile` via `railway.json`).
-  Needs `DATABASE_URL`, `OPENAI_API_KEY`, `AUTH_USER`, `AUTH_PASS` in Variables.
+  Needs `DATABASE_URL`, `OPENAI_API_KEY`, and optional `AUTH_USER`/`AUTH_PASS`
+  in Variables. Add `TAVILY_API_KEY` for better onboarding-time web coverage.
 - **Database**: Neon (connection string in local `.env` as `DATABASE_URL`).
-- **Ingestion**: not on Railway. Runs via `docker compose` where the scraper keys
-  live (`.env`). Currently run on demand to control Apify/Firecrawl cost.
+- **Worker**: can run via `docker compose` or a separate Railway worker service
+  where recurring scraper keys live. Keep high-cost keys off the public API
+  service unless onboarding needs them.
 - **Data present**: Blue Bottle Coffee sample data in Neon from earlier passes.
 
 ## 4. Secrets and where keys go (important)
 
 - **Never paste secrets in chat.** Only into local `.env` or Railway Variables.
-- **API keys (Railway needs)**: `DATABASE_URL`, `OPENAI_API_KEY`, `AUTH_USER`,
-  `AUTH_PASS`. These belong in Railway Variables (and local `.env`).
-- **Scraper keys (ingestion needs, NOT Railway)**: `TAVILY_API_KEY`,
-  `FIRECRAWL_API_KEY`, `APIFY_TOKEN(S)`. These belong in local `.env` only,
-  because the scraper runs locally, not on Railway.
+- **API keys (Railway needs)**: `DATABASE_URL`, `OPENAI_API_KEY`, and optionally
+  `AUTH_USER`, `AUTH_PASS`, `TAVILY_API_KEY`. These belong in Railway Variables
+  (and local `.env`).
+- **Recurring scraper keys (worker needs)**: `FIRECRAWL_API_KEY`,
+  `APIFY_TOKEN(S)`, and any source-specific overrides. Put them on the worker
+  service or local `.env`, not necessarily on the public API service.
 - `.env` and `config/brands.dynamic.yml` are gitignored and must stay so.
 
 ## 5. How to run
@@ -62,13 +65,13 @@ repo so the running path is the only path documented here.
 Local, full app:
 ```bash
 export PATH="/Applications/Docker.app/Contents/Resources/bin:$PATH"
-docker compose up --build           # api on :8000 + ingestion loop
+docker compose up --build           # api on :8000 + worker loop
 ```
 
 One scrape + enrich pass only (no continuous cost):
 ```bash
-docker compose build ingestion
-RUN_ONCE=1 docker compose run --rm ingestion
+docker compose build worker
+RUN_ONCE=1 docker compose run --rm worker
 ```
 
 Deploy API changes: push to GitHub `main`; Railway rebuilds automatically.
@@ -97,7 +100,7 @@ Database schema (once): `psql "$DATABASE_URL" -f postgres/ddl.sql`.
   the live Railway app now onboards any brand, scrapes from across the web and
   social, saves to Neon, enriches, and serves a live dashboard. Getting there:
   (1) added open/free connectors (Reddit JSON, Hacker News, Mastodon) and a
-  `collect_until` orchestrator targeting ~200 samples, free-first with Apify last,
+  `collect_until` orchestrator targeting ~200 samples, cloud-safe first with Apify last,
   plus "Social SEO" discovery (X/LinkedIn/IG/FB/YouTube tagged from web search);
   (2) brand-keyed review id so brands never mix; (3) diagnosed the live failures:
   first a missing `DATABASE_URL` on Railway (variable-scoping trap), then the local
@@ -105,9 +108,7 @@ Database schema (once): `psql "$DATABASE_URL" -f postgres/ddl.sql`.
   replaced local embeddings with the **OpenAI embeddings API** (`text-embedding-3-small`
   @ 768 dims), removing the crashing model entirely and shrinking the image.
   Verified live: a fresh brand collected 168 reviews and enriched with no crash.
-  KNOWN: chat model `gpt-5.4-nano` is not on this OpenAI key (chat is on its
-  extractive fallback until switched to a supported model). Auth gate currently
-  OFF on Railway (app is public).
+  Auth gate currently OFF on Railway (app is public).
 - **Full visual rebrand (2026-07-08)**: adapted a ReviewBay landing template from
   Claude Design into a terminal-editorial system (near-black + lime-chartreuse,
   Funnel Display / Public Sans / Martian Mono, square corners). Rewrote
@@ -147,11 +148,10 @@ Database schema (once): `psql "$DATABASE_URL" -f postgres/ddl.sql`.
 - **Trustpilot via Playwright (2026-07-08)**: added `TrustpilotConnector`
   (`connectors/playwright_source.py`), a self-hosted Playwright + Selectolax
   scraper. Opt-in via listing `trustpilot` in a brand's sources; derives the
-  Trustpilot page from the brand `website` (or `TRUSTPILOT_URL_<BRAND>`). Added
-  `playwright` + `selectolax` to requirements and a `playwright install --with-deps
-  chromium` step to `docker/ingestion.Dockerfile` (this makes the ingestion image
-  noticeably heavier). Parser and graceful-disable (no browser -> no-op) verified;
-  the live Trustpilot selectors still need a real-page check.
+  Trustpilot page from the brand `website` (or `TRUSTPILOT_URL_<BRAND>`).
+  Playwright/Selectolax are optional install-time dependencies, not part of the
+  base Railway requirements. Parser and graceful-disable (missing deps/browser ->
+  no-op) verified.
 - **Scraping upgrade (2026-07-08)**:
   - Reddit API is closed to self-service, so `reddit` was dropped as a default
     source. The `web` search now tags reddit.com / youtube.com hits so Reddit and
@@ -180,8 +180,8 @@ Database schema (once): `psql "$DATABASE_URL" -f postgres/ddl.sql`.
       Still to do: run a `RUN_ONCE` pass to pull data via Tavily and verify.
 - [x] Built the Playwright + Selectolax Trustpilot connector.
 - [x] Verified the Trustpilot selectors against a live page (pulled real reviews).
-      To use it in the docker ingestion, rebuild that image (`docker compose build
-      ingestion`) so chromium is installed, then add `trustpilot` to a brand.
+      To use it in Docker, install `playwright`, `selectolax`, and Chromium in the
+      worker/API image that will run it, then add `trustpilot` to a brand.
 - [ ] Optional: activate Airbyte Cloud (UI step) and add entries to
       `config/airbyte_sources.yml`.
 - [ ] Verify the live Railway URL end to end (health, login, dashboard, chat)
@@ -196,7 +196,8 @@ Database schema (once): `psql "$DATABASE_URL" -f postgres/ddl.sql`.
 - pgvector: a `json.dumps(list_of_floats)` string is valid vector input; write and
   search with a `%(...)s::vector` cast.
 - Code is baked into the Docker image via COPY, so code changes need a rebuild.
-- `gpt-5.4-nano` is a real model (verify OpenAI model ids live rather than assume).
+- Keep `.env.example` on a broadly available OpenAI model; verify model ids live
+  before changing deployment variables.
 - `/r/<token>` and `/api/shared/<token>` are PUBLIC (exempt from the AUTH_USER/
   AUTH_PASS gate) by design, so a share link opens a saved report without the app
   password. The token is unguessable and the data is public reviews, but be aware

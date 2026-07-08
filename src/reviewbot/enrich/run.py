@@ -1,12 +1,13 @@
-"""Enrich RAW reviews into MARTS: add real embeddings + sentiment (in Python).
+"""Enrich RAW reviews into MARTS: add real embeddings + sentiment.
 
 It reads reviews from raw.reviews_raw that aren't in marts.reviews yet, computes
-each one's embedding and sentiment locally (see embeddings.py), and upserts them
-into marts with the vector stored in the pgvector vector(768) column. The chatbot
-then searches marts by cosine distance (embedding <=> query_vector).
+each one's OpenAI embedding and local VADER sentiment (see embeddings.py), and
+upserts them into marts with the vector stored in the pgvector vector(768)
+column. The chatbot then searches marts by cosine distance (embedding <=>
+query_vector).
 
-Run standalone (`python -m reviewbot.enrich.run`), from the cloud worker, or as
-an Airflow task.
+Run standalone (`python -m reviewbot.enrich.run`), from the cloud worker, or from
+another scheduler.
 """
 
 from __future__ import annotations
@@ -19,10 +20,8 @@ from .. import embeddings
 
 log = logging.getLogger(__name__)
 
-# Small batch keeps peak memory low. Embedding a large batch (e.g. 200) can get
-# the process OOM-killed on a memory-constrained host (the embedding model already
-# needs ~1 GB just to load). Default kept low for small cloud instances; raise it
-# via env on machines with more RAM if you want faster enrichment.
+# Small batch keeps peak memory and API request size low. Default kept modest for
+# small cloud instances; raise it via env if throughput matters more.
 BATCH = int(os.environ.get("ENRICH_BATCH", "16"))
 
 # Pull reviews that still need enriching (new, or whose text changed).

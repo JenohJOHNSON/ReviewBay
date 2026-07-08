@@ -7,8 +7,8 @@ resort. It must be resilient: one dead source, or a broken/irrelevant brand
 website, must NEVER make the whole run return nothing.
 
 Order of attack:
-  1. Free, keyless/cheap sources (web search, Hacker News, Mastodon, Reddit,
-     Trustpilot, app stores).
+  1. Cloud-safe, keyless/cheap sources (web search, Hacker News, Mastodon,
+     app stores).
   2. Social-SEO discovery: extra web queries biased toward the social platforms
      (X, LinkedIn, Instagram, ...), whose public posts are indexed by search.
      Host-tagging sorts those hits into the right platform bucket.
@@ -31,8 +31,10 @@ from .run import build_connectors
 
 log = logging.getLogger("reviewbot.collect")
 
-# Free / keyless (or cheap-keyed) sources, tried first.
-FREE_PLAN = ["web", "hackernews", "mastodon", "reddit", "trustpilot", "app_store", "google_play"]
+# Cloud-safe default sources, tried first. Direct Reddit and Trustpilot remain
+# opt-in source choices: Railway IPs are often blocked by Reddit, and Trustpilot
+# needs a brand domain plus optional Playwright browser dependencies.
+FREE_PLAN = ["web", "hackernews", "mastodon", "app_store", "google_play"]
 # Walled gardens reachable only via Apify. Last resort, skipped without a token.
 APIFY_PLAN = ["instagram", "facebook", "google_maps", "yelp", "tripadvisor"]
 # Search hints that bias the web source toward socially-indexed content.

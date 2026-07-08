@@ -29,7 +29,7 @@ from ..connectors.apify_source import (
     _yelp_map,
 )
 from ..connectors.google_search import GoogleSearchConnector
-from ..ingestion import postgres_loader
+from ..ingestion import loader
 from ..models import NormalizedReview
 
 log = logging.getLogger(__name__)
@@ -207,7 +207,7 @@ def normalize_sources(sources: Iterable[dict[str, Any]], limit: int = IMPORT_LIM
                     reviews.extend(map_airbyte_row(str(brand), str(source), str(mapper), row))
                 except Exception:  # noqa: BLE001
                     log.exception("could not map Airbyte row table=%s mapper=%s", table_name, mapper)
-            total += postgres_loader.load(reviews)
+            total += loader.load(reviews)
             log.info("Airbyte table=%s mapped %d review(s)", table_name, len(reviews))
     finally:
         conn.close()

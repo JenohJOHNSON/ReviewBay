@@ -1,10 +1,11 @@
 # Brands to monitor. This is your control panel: add a brand, its keywords, and
 # which sources to scrape.
 #
-# sources: app_store | google_play for the Python worker.
-#          Airbyte Cloud handles web | reddit | google_maps | yelp
+# sources: app_store | google_play for the default Python worker.
+#          Airbyte Cloud can import web | reddit | google_maps | yelp
 #          | tripadvisor | instagram | facebook via config/airbyte_sources.yml.
-#          The legacy direct ingestion runner can still use all sources locally.
+#          Direct runs can opt into web, reddit, mastodon, hackernews, firecrawl,
+#          trustpilot, and the Apify-backed sources.
 #
 #          app_store + google_play are FREE (no token — Apple's RSS feed and the
 #          google-play-scraper library, respectively).

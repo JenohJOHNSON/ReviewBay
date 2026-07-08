@@ -33,13 +33,12 @@ summary (no LLM, so it is fast and reproducible).
 ## Architecture
 
 ```
-  collect_until orchestrator  (free-first, paid-last, target ~200 samples)
+  collect_until orchestrator  (cloud-safe first, paid-last, target ~200 samples)
   ────────────────────────────────────────────────────────────────────────
    web        Tavily search  (fallback: Apify google-search)
-   reddit     public search JSON        hackernews  Algolia HN API
-   mastodon   public hashtag timelines  trustpilot  Playwright + Selectolax
+   hackernews Algolia HN API             mastodon   public hashtag timelines
    app_store  Apple RSS      google_play  google-play-scraper
-   firecrawl  opt-in deep scrape
+   reddit / trustpilot / firecrawl       opt-in direct connectors
    instagram / facebook / google_maps / yelp / tripadvisor   ── Apify (last resort)
                               │
         every source yields the SAME NormalizedReview
@@ -68,13 +67,13 @@ a new plugin, not a rewrite, and that normalized record (which always carries
 
 These are the choices worth talking through:
 
-**1. Scrape anywhere, free-first, paid-last.** Most platforms either block
+**1. Scrape anywhere, cloud-safe first, paid-last.** Most platforms either block
 scraping or charge for it. Instead of paying for everything, `collect_until`
-(`ingestion/collect.py`) runs free/open sources first (web search, Reddit JSON,
-Hacker News, Mastodon, app stores, Trustpilot), and only falls back to paid Apify
-actors for the walled gardens (Instagram/Facebook) if it still hasn't hit its
-floor. It targets ~200 samples and degrades gracefully when the internet simply
-doesn't have that many for a niche brand.
+(`ingestion/collect.py`) runs cloud-safe free/open sources first (web search,
+Hacker News, Mastodon, app stores), and only falls back to paid Apify actors for
+the walled gardens (Instagram/Facebook) if it still hasn't hit its floor. It
+targets ~200 samples and degrades gracefully when the internet simply doesn't
+have that many for a niche brand.
 
 **2. "Social SEO" discovery instead of fragile social scraping.** X, LinkedIn, and
 Instagram block scrapers, but their public posts are indexed by search engines. So
@@ -123,7 +122,7 @@ spike memory at once. A scrape-run history table records every collection.
 | Chat | OpenAI Responses API (RAG), extractive fallback |
 | Sentiment | vaderSentiment (local) |
 | Insights | scikit-learn (TF-IDF + KMeans) |
-| Scraping | Tavily, Firecrawl, Apify, Reddit JSON, Algolia HN, Mastodon API, Apple RSS, google-play-scraper, Playwright + Selectolax |
+| Scraping | Tavily, Firecrawl, Apify, Algolia HN, Mastodon API, Apple RSS, google-play-scraper; optional Reddit JSON/API and Trustpilot Playwright |
 | Packaging | Docker, docker-compose |
 | Hosting | Railway (API), Neon (DB) |
 
@@ -137,14 +136,16 @@ Sources are grouped into categories so the dashboard stays readable
 | Category | Sources | Cost |
 |----------|---------|------|
 | App Reviews | app_store, google_play | Free (Apple RSS + google-play-scraper) |
-| Review Sites | trustpilot, google_maps, yelp, tripadvisor | Trustpilot self-hosted (Playwright); rest via Apify |
-| Social | reddit, mastodon, hackernews, twitter, linkedin, instagram, facebook, youtube | Free (direct APIs + web tagging); IG/FB via Apify last-resort |
+| Review Sites | trustpilot, google_maps, yelp, tripadvisor | Trustpilot opt-in self-hosted (Playwright); rest via Apify |
+| Social | reddit, mastodon, hackernews, twitter, linkedin, instagram, facebook, youtube | Free via web tagging/direct open APIs; IG/FB via Apify last-resort |
 | Web & News | web | Tavily (cheap) or Apify search |
 
 Worth knowing:
-- **Reddit's API is closed to self-service**, so `reddit` uses the public
-  `search.json` (keyless). It works from residential IPs but is blocked on cloud
-  IPs, where the web search covers Reddit instead. It degrades quietly.
+- **Reddit's API is closed to self-service**, so the direct `reddit` connector is
+  opt-in. On Railway, Reddit is usually covered by web search and host-tagged as
+  Social when reddit.com results appear.
+- **Trustpilot is opt-in**. Add `trustpilot` to a brand's sources and install
+  `playwright`, `selectolax`, and Chromium only in an image that will use it.
 - **`web` prefers Tavily** when `TAVILY_API_KEY` is set, else Apify google-search.
 - **Apify is the last resort**, reached only when free sources fall short and a
   token is configured. No token means those sources are simply skipped.
@@ -167,11 +168,10 @@ src/reviewbot/
                                hackernews, mastodon, tavily, firecrawl, playwright
                                (Trustpilot), app_store, google_play, apify_source)
   ingestion/
-    collect.py                 collect_until orchestrator (free-first, target ~200)
+    collect.py                 collect_until orchestrator (cloud-safe first, target ~200)
     run.py                     build_connectors + poll loop
     loader.py                  Neon upsert into raw.reviews_raw
-    airbyte_normalize.py       optional Airbyte staging import
-  airbyte/                     Airbyte Cloud normalizer used by the worker
+  airbyte/normalize.py         Airbyte Cloud normalizer used by the worker
   worker.py                    Airbyte import + local sources + enrichment loop
   enrich/run.py                raw -> marts: OpenAI embed + sentiment
   api/
@@ -181,7 +181,7 @@ src/reviewbot/
     insights.py                scikit-learn review summary (no LLM)
     stats.py  export.py        dashboard aggregations, CSV export
     static/                    the web UI (terminal-editorial design system)
-docker/                        api.Dockerfile, worker.Dockerfile, ingestion.Dockerfile
+docker/                        api.Dockerfile, worker.Dockerfile
 docker-compose.yml             api + worker services
 railway.json                   Railway build (api) config
 ```

@@ -1,7 +1,7 @@
 """Ingestion entrypoint: read brand config, run every enabled connector, load.
 
 Runs each source on its own cadence in a single loop. With RUN_ONCE=1 it does a
-single pass and exits (handy for cron / Airflow tasks / local testing);
+single pass and exits (handy for cron, schedulers, or local testing);
 otherwise it polls forever, which is the "near-real-time" mode. When freshness
 needs to beat the poll interval, this is the component that grows an event bus
 in front of the loader — the connector interface above stays unchanged.
@@ -137,8 +137,9 @@ def _load_config() -> dict:
 def run_source(source_name: str, config: dict | None = None) -> int:
     """Run a single source across every brand that enables it.
 
-    This is the granular entrypoint Airflow calls — one task per source, so each
-    source's cadence, retries, and failures are independent of the others.
+    This is the granular entrypoint a scheduler can call — one task per source,
+    so each source's cadence, retries, and failures are independent of the
+    others.
     """
     config = config or _load_config()
     default_limit = int(os.environ.get("FETCH_LIMIT", "50"))
@@ -218,7 +219,7 @@ def run_once(config: dict) -> int:
 def main() -> None:
     config = _load_config()
 
-    interval = int(os.environ.get("POLL_INTERVAL_SECONDS", "900"))  # 15 min default
+    interval = int(os.environ.get("WORKER_INTERVAL_SECONDS", "900"))  # 15 min default
     run_once_only = os.environ.get("RUN_ONCE", "0") == "1"
 
     while True:
@@ -226,7 +227,7 @@ def main() -> None:
             n = run_once(config)
             log.info("scrape pass complete: %d reviews upserted", n)
             # Embed + score the new rows into MARTS so the chatbot can see them.
-            # (In the Airflow setup this is a separate task instead.)
+            # (In split-worker setups this can be a separate scheduled task.)
             from ..enrich.run import enrich
 
             enrich()

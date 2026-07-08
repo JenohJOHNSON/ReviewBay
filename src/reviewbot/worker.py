@@ -36,7 +36,7 @@ def run_cycle() -> dict[str, int]:
 
 
 def main() -> None:
-    interval = int(os.environ.get("WORKER_INTERVAL_SECONDS", os.environ.get("POLL_INTERVAL_SECONDS", "900")))
+    interval = int(os.environ.get("WORKER_INTERVAL_SECONDS", "900"))
     run_once = os.environ.get("RUN_ONCE", os.environ.get("WORKER_RUN_ONCE", "0")) == "1"
     while True:
         try:
