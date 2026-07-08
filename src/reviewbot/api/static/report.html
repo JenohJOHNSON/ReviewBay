@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ReviewBay Report</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Funnel+Display:wght@400;500;600;700&family=Public+Sans:wght@400;500;600&family=Martian+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/theme.css">
+<script src="/static/brands.js"></script>
+<style>
+  .toolbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .toolbar select { min-width:170px; }
+  .hero { display:flex; align-items:center; gap:26px; flex-wrap:wrap; }
+  .score { font-family:var(--font-mono); font-size:60px; font-weight:500; letter-spacing:-.03em; line-height:1; }
+  .score small { font-size:20px; color:var(--muted); font-weight:600; }
+  .scorelabel { font-size:13px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; padding:4px 12px; border-radius:0; border:1px solid var(--line); display:inline-block; margin-top:8px; }
+  .scorelabel.pos { color:var(--pos); border-color:var(--pos); }
+  .scorelabel.neu { color:var(--neu); border-color:var(--neu); }
+  .scorelabel.neg { color:var(--neg); border-color:var(--neg); }
+  .herostat { border-left:1px solid var(--line); padding-left:22px; }
+  .herostat .n { font-family:var(--font-mono); font-size:26px; font-weight:500; letter-spacing:-.02em; }
+  .herostat .l { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
+  .summary { font-size:15px; line-height:1.65; margin:2px 0 0; }
+  .beh { margin:14px 0 0; font-size:14px; color:var(--ink); background:var(--surface-2); padding:11px 13px; border-radius:0; }
+  h3.sec { font-size:13px; text-transform:uppercase; letter-spacing:.05em; color:var(--accent); margin:0 0 10px; }
+  .ilist { margin:0; padding-left:18px; }
+  .ilist li { margin:8px 0; font-size:14px; line-height:1.5; }
+  .proscons { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+  @media (max-width:600px){ .proscons { grid-template-columns:1fr; } }
+  .proscons h4 { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; margin:0 0 6px; }
+  .proscons ul { margin:0; padding-left:18px; } .proscons li { margin:5px 0; font-size:14px; }
+  .theme { display:inline-block; border:1px solid var(--line); border-radius:0; padding:4px 11px; margin:0 6px 6px 0; font-size:13px; font-weight:500; }
+  a.cite { font-weight:700; text-decoration:none; color:var(--accent); font-size:12px; padding:0 1px; }
+  a.cite:hover { text-decoration:underline; }
+  .src-item { border-bottom:1px solid var(--line); padding:10px 0; font-size:13px; }
+  .src-item:last-child { border-bottom:none; }
+  .src-item a { font-weight:600; }
+  .note { font-size:12px; color:var(--muted); margin-top:6px; }
+  .savedbanner { background:var(--accent-soft); border:1px solid var(--line); border-radius:0; padding:10px 14px; font-size:13px; margin-bottom:14px; }
+  .dl { font-size:13px; font-weight:600; color:var(--accent); text-decoration:none; border:1px solid var(--line); padding:7px 12px; border-radius:0; background:none; font-family:var(--font); cursor:pointer; }
+  .dl:hover { background:var(--accent-soft); }
+  /* Print / Save-as-PDF: drop the chrome, keep the report clean and unbroken. */
+  @media print {
+    .topbar, .toolbar { display:none !important; }
+    body { background:#fff; }
+    .wrap { max-width:none; padding:0; }
+    .card { box-shadow:none; border:1px solid #ddd; break-inside:avoid; }
+    .grid { display:block; }
+    .grid > .card { margin-bottom:12px; }
+    a.cite, .src-item a { color:#000; }
+  }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a href="/" class="brand">ReviewBay</a>
+  <span class="sp"></span>
+  <nav class="nav">
+    <a href="/start">Add brand</a>
+    <a href="/dashboard">Dashboard</a>
+    <a href="/report" class="active">Report</a>
+    <a href="/compare">Compare</a>
+    <a href="/chat" id="chatLink">Chat</a>
+  </nav>
+</header>
+<main class="wrap">
+  <div class="toolbar">
+    <select id="brand" title="Pick one of your brands"></select>
+    <span id="updated" class="muted"></span>
+    <span style="flex:1"></span>
+    <select id="savedSel" title="Saved reports"><option value="">Live report</option></select>
+    <button id="saveBtn" class="dl" type="button">Save report</button>
+    <button id="pdfBtn" class="dl" type="button">Save as PDF</button>
+  </div>
+  <div id="content"><div class="empty">Loading the report</div></div>
+</main>
+
+<script>
+const brandSel = document.getElementById('brand');
+const content = document.getElementById('content');
+function esc(s){ return (s==null?'':String(s)).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function scoreClass(label){ return label==='Excellent'||label==='Good' ? 'pos' : label==='Mixed' ? 'neu' : 'neg'; }
+
+// Turn [n] markers in a synthesized sentence into links to the cited review.
+function cited(text, sources){
+  return esc(text).replace(/\[(\d+)\]/g, (m, n) => {
+    const s = sources[parseInt(n,10)-1];
+    if(!s || !s.source_url) return m;
+    return `<a class="cite" href="${esc(s.source_url)}" target="_blank" rel="noopener" title="${esc(s.source||'')}">[${n}]</a>`;
+  });
+}
+function section(title, items, sources){
+  if(!items || !items.length) return '';
+  const lis = items.map(t => `<li>${cited(t, sources)}</li>`).join('');
+  return `<div class="card"><h3 class="sec">${esc(title)}</h3><ul class="ilist">${lis}</ul></div>`;
+}
+
+async function load(brand){
+  const cl = document.getElementById('chatLink');
+  if (cl) cl.href = '/chat' + (brand ? '?brand=' + encodeURIComponent(brand) : '');
+  content.innerHTML = '<div class="empty">Building the intelligence report, this takes a few seconds</div>';
+  let d;
+  try { d = await (await fetch('/api/report' + (brand ? '?brand=' + encodeURIComponent(brand) : ''))).json(); }
+  catch(e){ content.innerHTML = '<div class="empty">Could not load the report: ' + esc(String(e)) + '</div>'; return; }
+  renderReport(d);
+  loadSavedList(brand);
+}
+
+// Sources list can be shown in cited order or grouped by platform, then by
+// sub-platform (the host: which Mastodon instance / which website a web hit is).
+let _curSources = [], _srcSort = 'cited', _srcFilter = '';
+function hostOf(url){ return (url||'').toLowerCase().split('://').pop().split('/')[0].replace(/^www\./,''); }
+function sortSources(sources, order){
+  const arr = sources.slice();
+  if(order==='platform') arr.sort((a,b) =>
+    (a.source||'').localeCompare(b.source||'')
+    || hostOf(a.source_url).localeCompare(hostOf(b.source_url))
+    || (a.n||0)-(b.n||0));
+  else arr.sort((a,b) => (a.n||0)-(b.n||0));
+  return arr;
+}
+function renderSrcItems(sources, order, filter){
+  let arr = filter ? sources.filter(s => (s.source||'') === filter) : sources;
+  return sortSources(arr, order).map(s => `<div class="src-item">[${s.n}]
+      <span class="pill">${esc(s.source)}</span>${s.rating!=null?`<span class="pill">${s.rating}/5</span>`:''}
+      <a href="${esc(s.source_url)}" target="_blank" rel="noopener">open</a>
+      <div class="muted" style="margin-top:3px">${esc(s.excerpt)}</div></div>`).join('') || '<div class="muted">No sources for this platform.</div>';
+}
+
+function renderReport(d){
+  if (d.empty) { content.innerHTML = '<div class="empty">' + esc(d.message || 'No data yet.') + '</div>'; return; }
+  const h = d.health || {}; const t = d.totals || {}; const sr = d.sources || [];
+  const sent = t.sentiment || {};
+  const when = d.saved_at ? esc(new Date(d.saved_at).toLocaleString()) : '';
+  const copyBtn = (d.token && !d.shared) ? ` <button class="dl" style="margin-left:8px" onclick="copyShare('${esc(d.token)}')">Copy share link</button>` : '';
+  const savedBanner = d.saved_at
+    ? `<div class="savedbanner">${d.shared ? 'Shared report snapshot from ' + when + '. Read-only view.' : 'Viewing a saved snapshot from ' + when + '. Choose "Live report" to return to the current one.'}${copyBtn}</div>`
+    : '';
+  const themes = (d.themes||[]).map(x => `<span class="theme">${esc(x.name)}</span>`).join('');
+  const pros = (d.top_praises||[]).map(x=>`<li>${esc(x)}</li>`).join('') || '<li class="muted">None</li>';
+  const cons = (d.top_complaints||[]).map(x=>`<li>${esc(x)}</li>`).join('') || '<li class="muted">None</li>';
+
+  const interp = [
+    section('Recurring issues', d.recurring_issues, sr),
+    section('Purchase drivers', d.purchase_drivers, sr),
+    section('Churn risks', d.churn_risks, sr),
+    section('Marketing angles', d.marketing_angles, sr),
+    section('Suggested product fixes', d.product_fixes, sr),
+    section('Ad ideas', d.ad_ideas, sr),
+  ].join('');
+  const interpBlock = interp
+    ? `<div class="grid" style="margin-top:14px">${interp}</div>`
+    : `<div class="card" style="margin-top:14px"><div class="muted">The AI narrative is unavailable right now, so this report shows the data-only sections. The health score, themes, and praise/complaint lists above are still accurate.</div></div>`;
+
+  _curSources = sr;
+  _srcFilter = '';  // reset the platform filter for each freshly loaded report
+  const platforms = [...new Set(sr.map(s => s.source).filter(Boolean))].sort();
+  const filterOpts = '<option value="">All platforms</option>'
+    + platforms.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join('');
+  const srcList = renderSrcItems(sr, _srcSort, _srcFilter);
+
+  content.innerHTML = `
+    ${savedBanner}
+    <div class="card">
+      <div class="hero">
+        <div>
+          <div class="l" style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Brand health</div>
+          <div class="score">${h.score!=null?h.score:'--'}<small> / 100</small></div>
+          <div class="scorelabel ${scoreClass(h.label)}">${esc(h.label||'')}</div>
+        </div>
+        <div class="herostat"><div class="n">${t.reviews||0}</div><div class="l">Reviews analyzed</div></div>
+        <div class="herostat"><div class="n">${t.avg_rating!=null?t.avg_rating:'n/a'}</div><div class="l">Avg rating</div></div>
+        <div class="herostat"><div class="n">${sent.positive||0}/${sent.neutral||0}/${sent.negative||0}</div><div class="l">Pos / Neu / Neg</div></div>
+      </div>
+      <p class="summary" style="margin-top:16px">${esc(d.summary||'')}</p>
+      ${d.behavior?`<div class="beh">${esc(d.behavior)}</div>`:''}
+      ${themes?`<div style="margin-top:14px">${themes}</div>`:''}
+      <div class="note">Report generated ${d.generated_with==='openai'?'with AI synthesis over real reviews':'from data only (AI narrative unavailable)'}.</div>
+    </div>
+
+    <div class="grid" style="margin-top:14px">
+      <div class="card"><div class="proscons">
+        <div><h4>Top praises</h4><ul>${pros}</ul></div>
+        <div><h4>Top complaints</h4><ul>${cons}</ul></div>
+      </div></div>
+    </div>
+
+    ${interpBlock}
+
+    <div class="card full" style="margin-top:14px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+        <h3 class="sec" style="margin:0">Sources (${sr.length})</h3>
+        <span style="flex:1"></span>
+        <label for="srcFilter" style="display:inline;text-transform:none;letter-spacing:0;font-size:12px;font-weight:500;margin:0;color:var(--muted)">Filter</label>
+        <select id="srcFilter" style="padding:6px 10px;font-size:13px">${filterOpts}</select>
+        <label for="srcSort" style="display:inline;text-transform:none;letter-spacing:0;font-size:12px;font-weight:500;margin:0;color:var(--muted)">Sort</label>
+        <select id="srcSort" style="padding:6px 10px;font-size:13px"><option value="cited">Cited order</option><option value="platform">By platform</option></select>
+      </div>
+      <div id="srcItems">${srcList}</div>
+    </div>`;
+  const rerenderSrc = () => { const box = document.getElementById('srcItems'); if (box) box.innerHTML = renderSrcItems(_curSources, _srcSort, _srcFilter); };
+  const sf = document.getElementById('srcFilter');
+  if (sf) { sf.value = _srcFilter; sf.onchange = () => { _srcFilter = sf.value; rerenderSrc(); }; }
+  const ss = document.getElementById('srcSort');
+  if (ss) { ss.value = _srcSort; ss.onchange = () => { _srcSort = ss.value; rerenderSrc(); }; }
+  const up = document.getElementById('updated');
+  if (up) up.textContent = 'Updated ' + new Date().toLocaleTimeString();
+}
+
+brandSel.addEventListener('change', () => load(brandSel.value));
+document.getElementById('pdfBtn').addEventListener('click', () => window.print());
+
+const savedSel = document.getElementById('savedSel');
+async function loadSavedList(brand){
+  try {
+    const j = await (await fetch('/api/reports/saved' + (brand ? '?brand=' + encodeURIComponent(brand) : ''))).json();
+    const items = j.saved || [];
+    savedSel.innerHTML = '<option value="">Live report</option>' +
+      items.map(s => `<option value="${s.id}">Saved ${esc(new Date(s.created_at).toLocaleString())}</option>`).join('');
+  } catch(e){ /* leave the Live option */ }
+}
+async function loadSaved(id){
+  content.innerHTML = '<div class="empty">Loading saved report</div>';
+  try { renderReport(await (await fetch('/api/reports/saved/' + encodeURIComponent(id))).json()); }
+  catch(e){ content.innerHTML = '<div class="empty">Could not load that saved report.</div>'; }
+}
+savedSel.addEventListener('change', () => { if (savedSel.value) loadSaved(savedSel.value); else load(brandSel.value); });
+document.getElementById('saveBtn').addEventListener('click', async () => {
+  const brand = brandSel.value; const btn = document.getElementById('saveBtn');
+  const orig = btn.textContent; btn.disabled = true; btn.textContent = 'Saving...';
+  try {
+    const r = await (await fetch('/api/report/save' + (brand ? '?brand=' + encodeURIComponent(brand) : ''), { method:'POST' })).json();
+    await loadSavedList(brand);
+    btn.textContent = r.ok ? 'Saved' : 'Nothing to save';
+  } catch(e){ btn.textContent = 'Save failed'; }
+  setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 1500);
+});
+
+function copyShare(token){
+  const url = location.origin + '/r/' + token;
+  navigator.clipboard.writeText(url).then(
+    () => { alert('Share link copied:\n' + url); },
+    () => { prompt('Copy this share link:', url); }
+  );
+}
+async function loadShared(token){
+  document.querySelector('.toolbar').style.display = 'none';
+  const cl = document.getElementById('chatLink'); if (cl) cl.style.display = 'none';
+  content.innerHTML = '<div class="empty">Loading shared report</div>';
+  try { renderReport(await (await fetch('/api/shared/' + encodeURIComponent(token))).json()); }
+  catch(e){ content.innerHTML = '<div class="empty">Could not load this shared report.</div>'; }
+}
+
+function init(){
+  const shared = location.pathname.match(/^\/r\/([^\/?#]+)/);
+  if (shared) { loadShared(shared[1]); return; }
+  const qs = (new URLSearchParams(location.search).get('brand') || '').trim();
+  if (qs && window.RB_Brands) RB_Brands.add(qs);
+  const brands = window.RB_Brands ? RB_Brands.list() : [];
+  if (!brands.length) {
+    content.innerHTML = `<div class="card"><div class="empty">
+      <p style="margin:0 0 14px">No brands yet. Add one to generate its intelligence report.</p>
+      <a href="/start" class="btn">Add a brand</a></div></div>`;
+    return;
+  }
+  const chosen = qs || brands[0];
+  RB_Brands.fillSelect(brandSel, { chosen });
+  load(chosen);
+}
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ReviewBay: Every review on the internet. One answer engine.</title>
+<link rel="stylesheet" href="/static/theme.css">
+<style>
+  /* ---- landing-only tokens + effects (ported from the ReviewBay design system) ---- */
+  :root {
+    --content-max: 1200px;
+    --text-hero: 500 60px/1.08 var(--font-display);
+    --text-display-l: 500 42px/1.16 var(--font-display);
+    --text-display-m: 500 26px/1.25 var(--font-display);
+    --text-body-l: 400 18px/1.6 var(--font);
+    --text-label: 500 12px/1.4 var(--font-mono);
+    --text-stat: 500 44px/1 var(--font-mono);
+    --accent-tint: rgba(203, 251, 94, 0.08);
+  }
+  body { border-left: 1px solid var(--line); border-right: 1px solid var(--line); }
+  .lbl { font: var(--text-label); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--accent); }
+  .section { max-width: var(--content-max); margin: 0 auto; padding: 88px 40px; }
+  .rule { border-top: 1px solid var(--line); }
+  h1, h2, h3 { color: var(--text-0); }
+
+  /* pixelate the hero headline into scanlines */
+  .fx-pixelate { filter: url(#ds-pixelate); }
+  /* intermittent chartreuse/white glitch on a single word */
+  .fx-glitch { position: relative; display: inline-block; }
+  .fx-glitch::before, .fx-glitch::after { content: attr(data-text); position: absolute; inset: 0; clip-path: inset(0 0 100% 0); pointer-events: none; }
+  .fx-glitch::before { color: var(--accent); animation: g-a 2.8s infinite steps(1); }
+  .fx-glitch::after { color: var(--text-0); animation: g-b 3.7s infinite steps(1); }
+  @keyframes g-a { 0%,7%,44%,50%,100%{clip-path:inset(0 0 100% 0);transform:none} 1%{clip-path:inset(8% 0 80% 0);transform:translateX(-3px)} 3%{clip-path:inset(62% 0 24% 0);transform:translateX(3px)} 5%{clip-path:inset(34% 0 54% 0);transform:translateX(-2px)} 45%{clip-path:inset(76% 0 8% 0);transform:translateX(2px)} 47%{clip-path:inset(14% 0 72% 0);transform:translateX(-3px)} }
+  @keyframes g-b { 0%,6%,58%,63%,100%{clip-path:inset(0 0 100% 0);transform:none} 2%{clip-path:inset(48% 0 40% 0);transform:translateX(3px)} 4%{clip-path:inset(84% 0 4% 0);transform:translateX(-2px)} 59%{clip-path:inset(22% 0 66% 0);transform:translateX(3px)} 61%{clip-path:inset(58% 0 30% 0);transform:translateX(-3px)} }
+  .fx-ascii { font: 400 13px/1.05 var(--font-mono); color: var(--accent-dim); white-space: pre; user-select: none; margin: 0; }
+  /* ASCII icon glitch (spec §7): rows displace horizontally only, olive palette
+     (bright accent + dark olive over the dim base), never white. */
+  .fx-ascii-glitch { position: relative; display: inline-block; }
+  .fx-ascii-glitch::before, .fx-ascii-glitch::after {
+    content: attr(data-text); position: absolute; inset: 0; white-space: pre;
+    clip-path: inset(0 0 100% 0); pointer-events: none; }
+  .fx-ascii-glitch::before { color: var(--accent); animation: ds-ascii-a 1.9s infinite steps(1); }
+  .fx-ascii-glitch::after { color: var(--accent-faint); animation: ds-ascii-b 2.7s infinite steps(1); }
+  @keyframes ds-ascii-a {
+    0%,8%,24%,40%,58%,74%,100% { clip-path: inset(0 0 100% 0); transform: none; }
+    2% { clip-path: inset(10% 0 76% 0); transform: translateX(-6px); }
+    5% { clip-path: inset(58% 0 28% 0); transform: translateX(5px); }
+    26% { clip-path: inset(30% 0 56% 0); transform: translateX(-4px); }
+    42% { clip-path: inset(70% 0 14% 0); transform: translateX(6px); }
+    60% { clip-path: inset(2% 0 84% 0); transform: translateX(4px); }
+    76% { clip-path: inset(44% 0 42% 0); transform: translateX(-6px); } }
+  @keyframes ds-ascii-b {
+    0%,10%,30%,48%,68%,86%,100% { clip-path: inset(0 0 100% 0); transform: none; }
+    3% { clip-path: inset(20% 0 66% 0); transform: translateX(5px); }
+    12% { clip-path: inset(64% 0 22% 0); transform: translateX(-5px); }
+    33% { clip-path: inset(6% 0 82% 0); transform: translateX(4px); }
+    50% { clip-path: inset(50% 0 36% 0); transform: translateX(-6px); }
+    70% { clip-path: inset(36% 0 50% 0); transform: translateX(6px); } }
+
+  /* nav */
+  .lp-nav { display: flex; align-items: center; justify-content: space-between; padding: 18px 40px; border-bottom: 1px solid var(--line); }
+  .lp-nav .links { display: flex; align-items: center; gap: 26px; }
+  .lp-nav .links a.txt { font: var(--text-label); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--text-1); }
+  .lp-nav .links a.txt:hover { color: var(--accent); text-decoration: none; }
+  .arrowbtn { display: inline-flex; align-items: stretch; border: 1px solid transparent; transition: transform var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out); }
+  .arrowbtn:hover { transform: translateX(2px); border-color: var(--text-1); text-decoration: none; }
+  .arrowbtn .ar { display: inline-flex; align-items: center; justify-content: center; width: 40px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--text-0); font: var(--text-label); }
+  .arrowbtn .tx { display: inline-flex; align-items: center; padding: 13px 20px; background: var(--inverse-bg); color: var(--inverse-text); font: var(--text-label); letter-spacing: .1em; text-transform: uppercase; }
+  .ghostbtn { display: inline-flex; align-items: center; gap: 8px; padding: 13px 18px; border: 1px solid var(--line-strong); color: var(--text-0); font: var(--text-label); letter-spacing: .1em; text-transform: uppercase; }
+  .ghostbtn:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
+
+  /* hero */
+  .hero { display: grid; grid-template-columns: 1.35fr 1fr; gap: 56px; align-items: center; }
+  .hero h1 { font: var(--text-hero); color: var(--text-0); margin: 22px 0 0; }
+  .hero p.lead { font: var(--text-body-l); color: var(--text-1); margin: 22px 0 36px; max-width: 52ch; }
+  .hero .cta-row { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
+  @media (max-width: 860px){ .hero { grid-template-columns: 1fr; } .hero .art { display: none; } }
+
+  /* sources strip */
+  .srcgrid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 12px; }
+  @media (max-width: 860px){ .srcgrid { grid-template-columns: repeat(3, 1fr); } }
+  .srccell { border: 1px solid var(--line); background: var(--surface); padding: 20px 8px; display: flex; align-items: center; justify-content: center; font: var(--text-label); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--text-1); text-align: center; }
+
+  /* stats */
+  .statgrid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+  @media (max-width: 700px){ .statgrid { grid-template-columns: 1fr; } }
+  .stat { border: 1px solid var(--line); background: var(--surface); padding: 24px; min-height: 172px; display: flex; flex-direction: column; justify-content: space-between; }
+  .stat .n { font: var(--text-stat); color: var(--accent-bright); }
+  .stat .k { font: var(--text-label); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--text-1); margin-top: 28px; }
+
+  /* pipeline */
+  .pipegrid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 700px){ .pipegrid { grid-template-columns: 1fr; } }
+  .stage { border: 1px solid var(--line); background: var(--surface); padding: 30px; }
+  .stage .top { display: flex; align-items: center; gap: 12px; }
+  .stage .kick { font: var(--text-label); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--accent); }
+  .stage h3 { font: var(--text-display-m); color: var(--text-0); margin: 16px 0 12px; }
+  .stage p { font: 400 14px/1.6 var(--font); color: var(--text-1); margin: 0 0 18px; }
+  .stage .tags { font: var(--text-label); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--text-2); }
+
+  /* chat demo */
+  .askgrid { display: grid; grid-template-columns: 1fr 1.2fr; gap: 56px; align-items: start; }
+  @media (max-width: 860px){ .askgrid { grid-template-columns: 1fr; } }
+  .term { border: 1px solid var(--line); background: var(--surface); }
+  .term .bar { display: flex; justify-content: space-between; align-items: center; padding: 13px 18px; border-bottom: 1px solid var(--line); }
+  .term .bar .t { font: var(--text-label); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--text-2); }
+  .term .bar .live { font: var(--text-label); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--accent); border: 1px solid var(--accent-faint); background: var(--accent-tint); padding: 4px 8px; }
+  .term .body { padding: 22px; display: flex; flex-direction: column; gap: 18px; }
+  .term .q { font: 400 13px/1.6 var(--font-mono); color: var(--text-0); background: var(--bg-2); border: 1px solid var(--line); padding: 13px 15px; }
+  .term .a { font: 400 14px/1.6 var(--font); color: var(--text-1); }
+  .term .a b { color: var(--text-0); font-weight: 600; }
+  .term .a a { color: var(--accent); }
+  .term .chips { display: flex; gap: 8px; flex-wrap: wrap; }
+  .term .chips span { font: var(--text-label); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--text-1); border: 1px solid var(--line-strong); padding: 6px 10px; }
+  .term .chips span.neg { color: var(--neg); }
+
+  /* cta + footer */
+  .ctagrid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 56px; align-items: center; }
+  @media (max-width: 860px){ .ctagrid { grid-template-columns: 1fr; } .ctagrid .art { display: none; } }
+  .foot { border-top: 1px solid var(--line); }
+  .footgrid { max-width: var(--content-max); margin: 0 auto; padding: 56px 40px; display: grid; grid-template-columns: 1.6fr 1fr 1fr; gap: 44px; }
+  @media (max-width: 700px){ .footgrid { grid-template-columns: 1fr; gap: 28px; } }
+  .footgrid .col { display: flex; flex-direction: column; gap: 12px; }
+  .footgrid .col .h { font: var(--text-label); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--text-2); margin-bottom: 4px; }
+  .footgrid .col a { font: 400 14px/1.5 var(--font); color: var(--text-1); }
+  .footgrid .col a:hover { color: var(--accent); }
+  .badges { display: flex; gap: 8px; flex-wrap: wrap; }
+  .badges span { font: var(--text-label); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--text-1); border: 1px solid var(--line-strong); padding: 6px 10px; }
+  .copyline { border-top: 1px solid var(--line); }
+  .copyline div { max-width: var(--content-max); margin: 0 auto; padding: 20px 40px; font: var(--text-label); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--text-2); }
+  @media (max-width: 700px){ .section { padding: 60px 22px; } .lp-nav { padding: 16px 22px; } .hero h1 { font-size: 44px; } .footgrid, .copyline div { padding-left: 22px; padding-right: 22px; } }
+  /* On small phones the full nav does not fit; keep the wordmark + primary CTA,
+     drop the jump links and the secondary button so nothing overflows. */
+  @media (max-width: 560px){
+    .lp-nav .links { gap: 14px; }
+    .lp-nav .links a.txt, .lp-nav .links .ghostbtn { display: none; }
+  }
+  @media (max-width: 380px){ .hero h1 { font-size: 38px; } }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><filter id="ds-pixelate" x="-10%" y="-10%" width="120%" height="120%"><feFlood x="0" y="0" width="4" height="3"></feFlood><feComposite width="4" height="5"></feComposite><feTile result="a"></feTile><feComposite in="SourceGraphic" in2="a" operator="in"></feComposite></filter></svg>
+
+<!-- NAV -->
+<header class="lp-nav">
+  <a href="/" class="brand" style="font-family:var(--font-display);font-weight:600;font-size:18px;color:var(--text-0)"><span style="color:var(--accent)">//</span> ReviewBay</a>
+  <nav class="links">
+    <a class="txt" href="#pipeline">Pipeline</a>
+    <a class="txt" href="#ask">Ask</a>
+    <a class="ghostbtn" href="/chat">Try the chat</a>
+    <a class="arrowbtn" href="/start"><span class="ar" aria-hidden="true">&rarr;</span><span class="tx">Add a brand</span></a>
+  </nav>
+</header>
+
+<!-- HERO -->
+<section class="section hero">
+  <div>
+    <div class="lbl">// Brand intelligence platform</div>
+    <h1 class="fx-pixelate">Every review on the internet. One <span class="fx-glitch" data-text="answer">answer</span> engine.</h1>
+    <p class="lead">ReviewBay gathers every public review of a brand, stores it in Neon with pgvector, and lets you ask questions in plain English, with links back to the original reviews. No dashboards to build. No guesswork.</p>
+    <div class="cta-row">
+      <a class="arrowbtn" href="/start"><span class="ar" aria-hidden="true">&rarr;</span><span class="tx">Add your first brand</span></a>
+      <a class="ghostbtn" href="#pipeline">&rarr; See the pipeline</a>
+    </div>
+  </div>
+  <div class="art" style="justify-self:end">
+    <pre class="fx-ascii fx-ascii-glitch" aria-hidden="true" data-text="      @@@@@@@@@@@@@@@@
+    @@#==============#@@
+   @@=  @@@  @@@  @@@  =@@
+   @@=                  =@@
+   @@=  @@@@@@@@@@@@@@  =@@
+   @@=                  =@@
+   @@=  @@@@@@@@@       =@@
+    @@#==============#@@
+      @@@@@@@@@@@@@@@@
+        @@@@
+      @@@@
+     @@">      @@@@@@@@@@@@@@@@
+    @@#==============#@@
+   @@=  @@@  @@@  @@@  =@@
+   @@=                  =@@
+   @@=  @@@@@@@@@@@@@@  =@@
+   @@=                  =@@
+   @@=  @@@@@@@@@       =@@
+    @@#==============#@@
+      @@@@@@@@@@@@@@@@
+        @@@@
+      @@@@
+     @@</pre>
+  </div>
+</section>
+
+<!-- SOURCES STRIP -->
+<section class="rule">
+  <div class="section" style="padding-top:40px;padding-bottom:40px;display:flex;flex-direction:column;gap:22px">
+    <span class="lbl">// Listening across</span>
+    <div class="srcgrid">
+      <div class="srccell">Reddit</div>
+      <div class="srccell">Trustpilot</div>
+      <div class="srccell">App Store</div>
+      <div class="srccell">Google Play</div>
+      <div class="srccell">YouTube</div>
+      <div class="srccell">Web &amp; News</div>
+      <div class="srccell">Forums</div>
+    </div>
+  </div>
+</section>
+
+<!-- STATS -->
+<section class="section rule">
+  <div class="lbl">// From noise to signal</div>
+  <h2 style="font:var(--text-display-l);color:var(--text-0);margin:20px 0 44px;max-width:24ch">Your brand is being reviewed right now. Somewhere you are not looking.</h2>
+  <div class="statgrid">
+    <div class="stat"><div class="n">7</div><div class="k">Public source families</div></div>
+    <div class="stat"><div class="n">100%</div><div class="k">Answers backed by a real review</div></div>
+    <div class="stat"><div class="n">&lt;60s</div><div class="k">Question to cited answer</div></div>
+  </div>
+</section>
+
+<!-- PIPELINE -->
+<section id="pipeline" class="section rule">
+  <div class="lbl">// The pipeline</div>
+  <h2 style="font:var(--text-display-l);color:var(--text-0);margin:20px 0 14px;max-width:26ch">One pipeline. From scattered reviews to sourced answers.</h2>
+  <p style="font:400 16px/1.6 var(--font);color:var(--text-1);margin:0 0 44px;max-width:60ch">Four stages that run themselves: collect every public mention, store it, give it meaning, and put an analyst on top of it.</p>
+  <div class="pipegrid">
+    <div class="stage">
+      <div class="top">
+        <span class="kick">/ Scrape</span>
+      </div>
+      <h3>Every public mention. Collected on schedule.</h3>
+      <p>Collectors watch review sites, social platforms, app stores, and forums for your brand. New mentions land in the pipeline within minutes, deduplicated, timestamped, and source-linked.</p>
+      <div class="tags">7 source families &middot; Incremental crawls &middot; Original URL kept</div>
+    </div>
+    <div class="stage">
+      <div class="top">
+        <span class="kick">/ Store</span>
+      </div>
+      <h3>Everything lands in Neon and pgvector. One schema.</h3>
+      <p>Raw mentions are normalized into a single review model: source, author, rating, sentiment, product line. Your Postgres, your data, queryable from day one.</p>
+      <div class="tags">Neon Postgres &middot; ELT, not CSVs &middot; Full history retained</div>
+    </div>
+    <div class="stage">
+      <div class="top">
+        <span class="kick">/ Embed</span>
+      </div>
+      <h3>A local model turns text into meaning.</h3>
+      <p>Every review is embedded on-device with a local model, so nothing is sent to a third party. Semantic search finds the complaint about "checkout freezing" even when nobody used those words.</p>
+      <div class="tags">Local embeddings &middot; No data sent out &middot; Semantic retrieval</div>
+    </div>
+    <div class="stage">
+      <div class="top">
+        <span class="kick">/ Ask</span>
+      </div>
+      <h3>An AI analyst with receipts.</h3>
+      <p>Ask in plain English. The AI answers from retrieved reviews only, and every claim links back to the original post. No hallucination. No black box.</p>
+      <div class="tags">RAG over your reviews &middot; Cited answers &middot; Plain-English queries</div>
+    </div>
+  </div>
+</section>
+
+<!-- CHAT DEMO -->
+<section id="ask" class="section rule">
+  <div class="askgrid">
+    <div>
+      <div class="lbl">// Ask the reviews</div>
+      <h2 style="font:var(--text-display-l);color:var(--text-0);margin:20px 0 16px">Stop reading 4,000 reviews. Ask one question.</h2>
+      <p style="font:400 16px/1.6 var(--font);color:var(--text-1);margin:0 0 28px">Answers are auditable by design: click any citation and read the original review, on the original site, in context.</p>
+      <a class="ghostbtn" href="/chat">&rarr; Open the chat</a>
+    </div>
+    <div class="term">
+      <div class="bar"><span class="t">reviewbay / ask</span><span class="live">Live</span></div>
+      <div class="body">
+        <div class="q">&gt; why did our app store rating drop in june?</div>
+        <div class="a">The drop traces to the 4.2 release. <b>61% of negative June reviews mention login failures after the update</b>, concentrated on iOS <a href="#">[App Store, Jun 14]</a> <a href="#">[App Store, Jun 17]</a>. A secondary thread complains about the redesigned checkout <a href="#">[Reddit, Jun 21]</a>. Sentiment on other topics stayed stable.</div>
+        <div class="chips">
+          <span>142 reviews retrieved</span>
+          <span class="neg">-0.8 rating</span>
+          <span>3 sources</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<section id="cta" class="section rule">
+  <div class="ctagrid">
+    <div>
+      <div class="lbl">// Get started</div>
+      <h2 style="font:var(--text-display-l);color:var(--text-0);margin:20px 0 16px">Ready to hear what your customers are already saying?</h2>
+      <p style="font:400 16px/1.6 var(--font);color:var(--text-1);margin:0 0 30px;max-width:52ch">Point ReviewBay at a brand name. The dashboard fills in as reviews arrive, and the chat answers with citations. No data engineering. No setup project.</p>
+      <a class="arrowbtn" href="/start"><span class="ar" aria-hidden="true">&rarr;</span><span class="tx">Add a brand</span></a>
+    </div>
+    <div class="art" style="justify-self:end">
+      <pre class="fx-ascii fx-ascii-glitch" aria-hidden="true" data-text="      @@
+      @@@@
+@@@@@@@@@@@@
+@@@@@@@@@@@@@@
+@@@@@@@@@@@@
+      @@@@
+      @@">      @@
+      @@@@
+@@@@@@@@@@@@
+@@@@@@@@@@@@@@
+@@@@@@@@@@@@
+      @@@@
+      @@</pre>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer class="foot">
+  <div class="footgrid">
+    <div>
+      <div style="font-family:var(--font-display);font-weight:600;font-size:18px;color:var(--text-0)"><span style="color:var(--accent)">//</span> ReviewBay</div>
+      <p style="font:400 14px/1.6 var(--font);color:var(--text-1);margin:16px 0 22px;max-width:42ch">Brand-reputation intelligence. Gather every mention. Store it in Neon. Ask it anything, with receipts.</p>
+      <div class="badges">
+        <span>Public data only</span>
+        <span>Cited answers</span>
+        <span>Your data in Neon</span>
+      </div>
+    </div>
+    <div class="col">
+      <div class="h">Product</div>
+      <a href="/start">Add a brand</a>
+      <a href="/dashboard">Dashboard</a>
+      <a href="/compare">Compare</a>
+      <a href="/chat">Ask the reviews</a>
+    </div>
+    <div class="col">
+      <div class="h">More</div>
+      <a href="#pipeline">Pipeline</a>
+      <a href="#ask">How it answers</a>
+      <a href="/report">Intelligence report</a>
+    </div>
+  </div>
+  <div class="copyline"><div>&copy; 2026 ReviewBay. Every answer shows its work.</div></div>
+</footer>
+</body>
+</html>

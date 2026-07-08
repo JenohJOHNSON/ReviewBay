@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ReviewBay Compare</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Funnel+Display:wght@400;500;600;700&family=Public+Sans:wght@400;500;600&family=Martian+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/theme.css">
+<script src="/static/brands.js"></script>
+<style>
+  :root { --a:#CBFB5E; --b:#6EA8FF; }   /* two distinct series: chartreuse vs blue */
+  .pickers { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:18px; }
+  .pickers select { min-width:180px; }
+  .vs { color:var(--muted); font-weight:700; }
+  .verdict { display:flex; gap:14px; flex-wrap:wrap; margin-bottom:16px; }
+  .verdict .v { font-size:14px; background:var(--surface); border:1px solid var(--line); border-radius:0; padding:12px 15px; box-shadow:var(--shadow); }
+  .verdict .v b { color:var(--ink); font-weight:700; }
+  .cols { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:680px){ .cols { grid-template-columns:1fr; } }
+  .brandname { font-size:18px; font-weight:700; margin:0 0 14px; display:flex; align-items:center; gap:9px; }
+  .swatch { width:12px; height:12px; border-radius:0; display:inline-block; flex:0 0 auto; }
+  .kpis { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-bottom:16px; }
+  .kpi { background:var(--surface-2); border-radius:0; padding:13px 8px; text-align:center; }
+  .kpi .n { font-family:var(--font-mono); font-size:24px; font-weight:500; letter-spacing:-.02em; }
+  .kpi .l { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.03em; margin-top:4px; }
+  .win { color:var(--pos)!important; }
+  .lead { font-size:10px; font-weight:600; color:var(--pos); text-transform:uppercase; letter-spacing:.03em; margin-left:5px; }
+  .donutwrap { display:flex; align-items:center; gap:16px; margin:6px 0 16px; }
+  .donut { width:96px; height:96px; }
+  .legend div { display:flex; align-items:center; gap:8px; margin:6px 0; font-size:13px; }
+  .legend .dot { width:10px; height:10px; }
+  h4 { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; margin:0 0 8px; }
+  .row { display:flex; align-items:center; gap:10px; margin:8px 0; font-size:13px; }
+  .row .lbl { width:92px; color:var(--muted); text-transform:capitalize; }
+  .row .bar { flex:1; height:9px; }
+  .row .val { width:38px; text-align:right; color:var(--muted); font-weight:600; }
+  .hint { color:var(--muted); font-size:13px; margin-top:16px; text-align:center; }
+  .insightsbox { margin-top:14px; }
+  .insightsbox ul.ins { margin:0; padding-left:18px; }
+  .insightsbox ul.ins li { margin:7px 0; font-size:14px; line-height:1.5; color:var(--ink); }
+  .insightsbox ul.ins li b { font-weight:600; }
+  .insightsbox .insnote { margin-top:12px; font-size:12px; color:var(--muted); line-height:1.5; border-top:1px solid var(--line); padding-top:9px; }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a href="/" class="brand">ReviewBay</a>
+  <span class="sp"></span>
+  <nav class="nav">
+    <a href="/start">Add brand</a>
+    <a href="/dashboard">Dashboard</a>
+    <a href="/compare" class="active">Compare</a>
+    <a href="/chat">Chat</a>
+  </nav>
+</header>
+<main class="wrap">
+  <div class="pickers">
+    <select id="selA"></select>
+    <span class="vs">vs</span>
+    <select id="selB"></select>
+  </div>
+  <div id="content"><div class="empty">Loading</div></div>
+</main>
+<script>
+const selA = document.getElementById('selA');
+const selB = document.getElementById('selB');
+const content = document.getElementById('content');
+function esc(s){ return (s||'').toString().replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+function fillSelect(sel, brands, chosen){
+  sel.innerHTML = '<option value="">pick a brand</option>' +
+    brands.map(b => `<option value="${esc(b)}"${b===chosen?' selected':''}>${esc(b)}</option>`).join('');
+}
+
+function total(x){ return (x.sentiment.positive + x.sentiment.neutral + x.sentiment.negative) || 1; }
+function posPct(x){ return Math.round(100 * x.sentiment.positive / total(x)); }
+
+function donutCss(x){
+  const t = total(x);
+  const p = 360*x.sentiment.positive/t, n = 360*x.sentiment.neutral/t;
+  return `conic-gradient(var(--pos) 0 ${p}deg, var(--neu) ${p}deg ${p+n}deg, var(--neg) ${p+n}deg 360deg)`;
+}
+
+function block(x, other, color){
+  if(!x) return `<div class="card"><div class="empty">Pick a second brand to compare.</div></div>`;
+  const s = x.sentiment;
+  const pp = posPct(x);
+  const winVol    = other ? x.total > other.total : false;
+  const winPos    = other ? posPct(x) > posPct(other) : false;
+  const winRating = other && x.avg_rating != null && (other.avg_rating == null || x.avg_rating > other.avg_rating);
+  const hs = (x.health && x.health.score != null) ? x.health.score : null;
+  const ohs = (other && other.health && other.health.score != null) ? other.health.score : null;
+  const winHealth = other && hs != null && (ohs == null || hs > ohs);
+  const lead = '<span class="lead">leads</span>';
+  const maxSrc = Math.max(...x.by_source.map(y=>y.count), 1);
+  const src = x.by_source.map(y =>
+    `<div class="row"><div class="lbl">${esc(y.source)}</div>
+      <div class="bar"><span style="width:${Math.round(100*y.count/maxSrc)}%;background:${color}"></span></div>
+      <div class="val">${y.count}</div></div>`).join('') || '<div class="muted">None</div>';
+  return `<div class="card">
+    <div class="brandname"><span class="swatch" style="background:${color}"></span>${esc(x.brand)}</div>
+    <div class="kpis">
+      <div class="kpi"><div class="n ${winHealth?'win':''}">${hs!=null?hs:'n/a'}${winHealth?lead:''}</div><div class="l">Health</div></div>
+      <div class="kpi"><div class="n ${winVol?'win':''}">${x.total}${winVol?lead:''}</div><div class="l">Reviews</div></div>
+      <div class="kpi"><div class="n ${winRating?'win':''}">${x.avg_rating!=null?x.avg_rating:'n/a'}${winRating?lead:''}</div><div class="l">Avg rating</div></div>
+      <div class="kpi"><div class="n" style="color:var(--pos)">${pp}%${winPos?lead:''}</div><div class="l">Positive</div></div>
+    </div>
+    <div class="donutwrap">
+      <div class="donut" style="background:${donutCss(x)}"></div>
+      <div class="legend">
+        <div><span class="dot" style="background:var(--pos)"></span> Positive, ${s.positive}</div>
+        <div><span class="dot" style="background:var(--neu)"></span> Neutral, ${s.neutral}</div>
+        <div><span class="dot" style="background:var(--neg)"></span> Negative, ${s.negative}</div>
+      </div>
+    </div>
+    <h4>Where reviews come from</h4>
+    ${src}
+  </div>`;
+}
+
+function verdict(a, b){
+  if(!a || !b || !a.total || !b.total) return '';
+  const parts = [];
+  if(a.health && b.health && a.health.score!=null && b.health.score!=null && a.health.score!==b.health.score){ const w=a.health.score>b.health.score?a:b; parts.push(`<div class="v"><b>${esc(w.brand)}</b> has the healthier reputation, ${Math.max(a.health.score,b.health.score)} vs ${Math.min(a.health.score,b.health.score)}</div>`); }
+  const ap = posPct(a), bp = posPct(b);
+  if(ap !== bp){ const w = ap>bp?a:b; parts.push(`<div class="v"><b>${esc(w.brand)}</b> is more loved, ${Math.max(ap,bp)}% vs ${Math.min(ap,bp)}% positive</div>`); }
+  else parts.push(`<div class="v">Tied on positivity, ${ap}% each</div>`);
+  if(a.avg_rating!=null && b.avg_rating!=null && a.avg_rating!==b.avg_rating){ const w = a.avg_rating>b.avg_rating?a:b; parts.push(`<div class="v"><b>${esc(w.brand)}</b> rates higher, ${Math.max(a.avg_rating,b.avg_rating)} vs ${Math.min(a.avg_rating,b.avg_rating)}</div>`); }
+  if(a.total !== b.total){ const w = a.total>b.total?a:b; parts.push(`<div class="v"><b>${esc(w.brand)}</b> is talked about more, ${Math.max(a.total,b.total)} vs ${Math.min(a.total,b.total)} reviews</div>`); }
+  return `<div class="verdict">${parts.join('')}</div>`;
+}
+
+// A short, deterministic read on the two brands (no LLM): who leads overall, and
+// where each is strong or exposed, drawn straight from the compared figures.
+function negPct(x){ return Math.round(100 * x.sentiment.negative / total(x)); }
+function insightsBox(a, b){
+  if(!a || !b || !a.total || !b.total) return '';
+  const items = [];
+  const ha = (a.health && a.health.score!=null) ? a.health.score : null;
+  const hb = (b.health && b.health.score!=null) ? b.health.score : null;
+  if(ha!=null && hb!=null){
+    if(ha!==hb){ const w = ha>hb?a:b; items.push(`<b>${esc(w.brand)}</b> has the stronger overall reputation, a ${Math.abs(ha-hb)}-point health gap (${Math.max(ha,hb)} vs ${Math.min(ha,hb)}).`); }
+    else items.push(`Both brands are level on overall health (${ha}).`);
+  }
+  const ap = posPct(a), bp = posPct(b);
+  if(ap!==bp){ const w = ap>bp?a:b; items.push(`<b>${esc(w.brand)}</b> is better liked: ${Math.max(ap,bp)}% positive vs ${Math.min(ap,bp)}%.`); }
+  if(a.avg_rating!=null && b.avg_rating!=null && a.avg_rating!==b.avg_rating){ const w = a.avg_rating>b.avg_rating?a:b; items.push(`<b>${esc(w.brand)}</b> rates higher on stars (${Math.max(a.avg_rating,b.avg_rating)} vs ${Math.min(a.avg_rating,b.avg_rating)}).`); }
+  if(a.total!==b.total){ const w = a.total>b.total?a:b; items.push(`<b>${esc(w.brand)}</b> gets more coverage (${Math.max(a.total,b.total)} vs ${Math.min(a.total,b.total)} reviews collected).`); }
+  const top = x => (x.by_source && x.by_source.length) ? x.by_source[0].source : null;
+  const ta = top(a), tb = top(b);
+  if(ta && tb){ items.push(ta===tb
+    ? `Both are discussed most on <b>${esc(ta)}</b>.`
+    : `<b>${esc(a.brand)}</b> shows up most on <b>${esc(ta)}</b>, <b>${esc(b.brand)}</b> on <b>${esc(tb)}</b>.`); }
+  const na = negPct(a), nb = negPct(b), hi = Math.max(na, nb);
+  if(hi>=35){ const w = na>nb?a:b; items.push(`Watch <b>${esc(w.brand)}</b>: ${hi}% of its reviews are negative.`); }
+  if(!items.length) return '';
+  return `<div class="card insightsbox"><h3>Insights</h3><ul class="ins">${items.map(t=>`<li>${t}</li>`).join('')}</ul>
+    <div class="insnote">Based on the reviews collected for each brand. We use recent, relevant samples, so figures are directional rather than exhaustive.</div></div>`;
+}
+
+function myBrands(){ return window.RB_Brands ? RB_Brands.list() : []; }
+
+async function load(){
+  const brands = myBrands();
+  if(!brands.length){
+    content.innerHTML = '<div class="card"><div class="empty">'
+      + '<p style="margin:0 0 14px">No brands yet. Add a couple from the Add brand page, then come back to put them head to head.</p>'
+      + '<a href="/start" class="btn">Add a brand</a></div></div>';
+    return;
+  }
+  const qs = [];
+  if(selA.value) qs.push('a=' + encodeURIComponent(selA.value));
+  if(selB.value) qs.push('b=' + encodeURIComponent(selB.value));
+  content.innerHTML = '<div class="empty">Loading</div>';
+  let d;
+  try { d = await (await fetch('/api/compare' + (qs.length?'?'+qs.join('&'):''))).json(); }
+  catch(e){ content.innerHTML = '<div class="empty">Could not load: ' + esc(String(e)) + '</div>'; return; }
+
+  let html = verdict(d.a, d.b)
+    + `<div class="cols">${block(d.a, d.b, 'var(--a)')}${block(d.b, d.a, 'var(--b)')}</div>`
+    + insightsBox(d.a, d.b);
+  if(brands.length < 2)
+    html += `<div class="hint">Only one brand in your list so far. Add a competitor from the Add brand page to see a real head to head.</div>`;
+  content.innerHTML = html;
+}
+
+// Fill both pickers from this browser's own brand history, then compare.
+(function init(){
+  const brands = myBrands();
+  fillSelect(selA, brands, '');
+  fillSelect(selB, brands, '');
+  if(brands.length >= 1) selA.value = brands[0];   // pre-pick so returning users
+  if(brands.length >= 2) selB.value = brands[1];   // see a real comparison at once
+  load();
+})();
+
+selA.addEventListener('change', load);
+selB.addEventListener('change', load);
+</script>
+</body>
+</html>
