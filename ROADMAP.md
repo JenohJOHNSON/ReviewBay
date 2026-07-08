@@ -86,8 +86,8 @@ found and fixed:
 
 - [x] README leads with the review-intelligence positioning; added CASESTUDY.md
       (problem / solution / impact / technical proof) for the portfolio.
-- [x] Removed legacy Snowflake/Cortex references from code docstrings and the
-      landing infographic; renamed `ingestion/snowflake_loader.py` to `loader.py`.
+- [x] Removed legacy warehouse/Cortex references from code docstrings and the
+      landing infographic; consolidated ingestion loading under `loader.py`.
 - [x] Verified the Trustpilot selectors against a live page: the connector pulled
       8 real reviews (ratings, authors, text) from a real Trustpilot page, not
       blocked. Trustpilot is a working self-hosted source.

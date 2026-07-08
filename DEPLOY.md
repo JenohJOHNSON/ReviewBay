@@ -1,6 +1,6 @@
 # Deploying ReviewBay 24/7 (Oracle Cloud Always Free)
 
-This runs the whole app (API plus the scraper worker) around the clock on a free
+This runs the whole app (API plus the cloud worker) around the clock on a free
 Linux server, so it stays live even when your laptop is off. It is the same
 `docker compose` you run locally, just on an always-on machine.
 
@@ -65,7 +65,7 @@ Easiest path: copy your local folder, which already has your filled-in `.env`.
 Run this on your MAC (a new Terminal tab, not the server):
 
 ```
-scp -r -i ~/Downloads/ssh-key-*.key "/Users/johnymohamedgaousejakkirhussain/Downloads/Claude AD/PROJECT JEN" ubuntu@YOUR_PUBLIC_IP:~/reviewbay
+scp -r -i ~/Downloads/ssh-key-*.key "/path/to/ReviewBay" ubuntu@YOUR_PUBLIC_IP:~/reviewbay
 ```
 
 That copies everything into `~/reviewbay` on the server.
@@ -98,17 +98,20 @@ On the server:
 
 ```
 cd ~/reviewbay
+./scripts/test.sh
 docker compose up -d --build
 ```
 
-The first build takes a few minutes. The first time you use the chat, the API
-downloads a roughly 400 MB model, so that one is slow, then fast after. Check it:
+The first build takes a few minutes. Enrichment uses the OpenAI embeddings API,
+so there is no local model download. Check the website:
 
 ```
 curl -s localhost:8000/healthz
+curl -s localhost:8000/readyz
 ```
 
-You should see `{"status":"ok"}`.
+`/healthz` should return `{"status":"ok"}`. `/readyz` should also return
+`"status":"ok"` once `DATABASE_URL` is set correctly and Neon is reachable.
 
 ## 8. Open it in your browser
 
@@ -122,7 +125,7 @@ running whether or not your laptop is on.
 ## Running it day to day
 
 - Both services use `restart: unless-stopped`, so they come back after a reboot.
-- Logs: `docker compose logs -f api` or `docker compose logs -f ingestion`.
+- Logs: `docker compose logs -f api` or `docker compose logs -f worker`.
 - Update after code changes: `git pull` (if you cloned) then `docker compose up -d --build`.
 - Stop: `docker compose down`. Start: `docker compose up -d`.
 

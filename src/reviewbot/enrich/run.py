@@ -5,8 +5,8 @@ each one's embedding and sentiment locally (see embeddings.py), and upserts them
 into marts with the vector stored in the pgvector vector(768) column. The chatbot
 then searches marts by cosine distance (embedding <=> query_vector).
 
-Run standalone (`python -m reviewbot.enrich.run`), from the ingestion loop, or
-as an Airflow task.
+Run standalone (`python -m reviewbot.enrich.run`), from the cloud worker, or as
+an Airflow task.
 """
 
 from __future__ import annotations

@@ -16,6 +16,8 @@ import re
 import threading
 import time
 
+from .. import db
+
 log = logging.getLogger(__name__)
 
 # Generic filler words that add no topical signal, folded into the stop-word set
@@ -41,9 +43,15 @@ _LOCK = threading.Lock()
 
 
 def _connect():
-    from ..db import connect
+    return db.connect()
 
-    return connect()
+
+def _cols(cur) -> list[str]:
+    cols = []
+    for c in cur.description:
+        name = getattr(c, "name", None)
+        cols.append((name if name is not None else c[0]).lower())
+    return cols
 
 
 def _sample_reviews(brand: str | None) -> list[dict]:
@@ -60,7 +68,7 @@ def _sample_reviews(brand: str | None) -> list[dict]:
                 """,
                 {"brand": brand, "n": INSIGHTS_SAMPLE},
             )
-            cols = [c[0].lower() for c in cur.description]
+            cols = _cols(cur)
             return [dict(zip(cols, r)) for r in cur.fetchall()]
     finally:
         conn.close()
@@ -110,13 +118,17 @@ def _behavior(pos: int, neg: int, pros: list[str], cons: list[str]) -> str:
 
 # --- the ML report ------------------------------------------------------------
 
-def _generate(brand: str | None, rows: list[dict]) -> dict:
+def _generate(brand: str | None | list[dict], rows: list[dict] | None = None) -> dict:
     """Build the report with TF-IDF keyphrases + KMeans themes + sentiment stats.
 
     Fully deterministic (fixed random_state, no sampling), so the same reviews
     always yield the same report. Degrades gracefully on tiny or low-signal
     corpora (fewer or no themes) rather than erroring.
     """
+    if rows is None:
+        rows = brand if isinstance(brand, list) else []
+        brand = None
+
     import numpy as np  # type: ignore
     from sklearn.cluster import KMeans  # type: ignore
     from sklearn.feature_extraction.text import TfidfVectorizer  # type: ignore
@@ -203,6 +215,7 @@ def _generate(brand: str | None, rows: list[dict]) -> dict:
         "cons": cons,
         "themes": themes,
         "behavior": _behavior(pos, neg, pros, cons),
+        "reviews_analyzed": len(rows),
     }
 
 
@@ -214,13 +227,22 @@ def get_insights(brand: str | None = None, refresh: bool = False) -> dict:
         if hit and not refresh and now - hit[0] < INSIGHTS_TTL:
             return hit[1]
 
-    rows = _sample_reviews(brand)
-    if not rows:
+    data = None
+    try:
+        rows = _sample_reviews(brand)
+    except db.DatabaseConfigError:
+        data = {
+            "summary": "Database is not configured yet. Set DATABASE_URL to your Neon Postgres URL.",
+            "pros": [], "cons": [], "themes": [], "behavior": "",
+            "reviews_analyzed": 0, "setup_required": "database",
+        }
+
+    if data is None and not rows:
         data = {
             "summary": "No reviews yet for this selection. Check back once collection runs.",
             "pros": [], "cons": [], "themes": [], "behavior": "", "reviews_analyzed": 0,
         }
-    else:
+    elif data is None:
         try:
             data = _generate(brand, rows)
             data["reviews_analyzed"] = len(rows)

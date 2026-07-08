@@ -7,7 +7,7 @@
  * Every page reads its brand list from here instead of a global server list.
  */
 (function () {
-  const KEY = 'reviewbay.brands.v1';
+  const KEY = 'reviewbay.brands.v3';
 
   function read() {
     try {
@@ -42,6 +42,12 @@
       const next = read().filter((b) => b.toLowerCase() !== lower);
       write(next);
       return next;
+    },
+
+    /** Clear this browser's remembered brands. */
+    clear() {
+      write([]);
+      return [];
     },
 
     has(name) {

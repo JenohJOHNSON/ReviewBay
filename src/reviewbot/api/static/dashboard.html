@@ -247,7 +247,7 @@ async function load(brand) {
 }
 
 async function loadInsights(brand){
-  insightsEl.innerHTML = `<div class="card ai"><h3>Review summary</h3><div class="muted">Summarizing reviews</div></div>`;
+  insightsEl.innerHTML = `<div class="card ai"><h3>ML review summary</h3><div class="muted">Analyzing reviews with local Python ML</div></div>`;
   let d;
   try { d = await (await fetch('/api/insights' + (brand ? '?brand=' + encodeURIComponent(brand) : ''))).json(); }
   catch(e){ insightsEl.innerHTML = ''; return; }
@@ -261,7 +261,7 @@ async function loadInsights(brand){
   const themeHint = themeList.length ? '<span class="sub" style="display:block;margin:0 0 8px">Click a theme to see what it means</span>' : '';
   insightsEl.innerHTML = `
     <div class="card ai">
-      <h3>Review summary <span class="sub">, ${d.reviews_analyzed||0} reviews analyzed</span></h3>
+      <h3>ML review summary <span class="sub">, ${d.reviews_analyzed||0} reviews analyzed</span></h3>
       <p class="summary">${esc(d.summary||'')}</p>
       <div class="proscons">
         <div><h4>What they love</h4><ul>${li(d.pros)}</ul></div>

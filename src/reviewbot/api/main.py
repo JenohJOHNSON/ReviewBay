@@ -16,11 +16,11 @@ import secrets
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .. import alerts
+from .. import alerts, db
 from . import insights, onboarding, rag, report, stats
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
@@ -109,30 +109,31 @@ def healthz() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/readyz")
-def readyz() -> dict[str, object]:
-    """Readiness: reports DATABASE_URL config and a trivial DB query, no secrets,
-    just booleans, so misconfig is visible without logging in. Kept OFF the
-    platform health-check path so it can never trigger a restart."""
-    import os
-
-    db_configured = bool(os.environ.get("DATABASE_URL"))
-    db = "not_configured"
-    if db_configured:
+@app.get("/readyz", response_model=None)
+def readyz():
+    """Readiness probe with setup diagnostics. It is deliberately separate from
+    /healthz so slow DB checks never affect platform liveness."""
+    checks: dict[str, str] = {}
+    try:
+        conn = db.connect()
         try:
-            from ..db import connect
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                cur.fetchone()
+            checks["database"] = "ok"
+        finally:
+            conn.close()
+    except db.DatabaseConfigError as exc:
+        checks["database"] = str(exc)
+        return JSONResponse({"status": "error", "checks": checks}, status_code=503)
+    except Exception as exc:  # noqa: BLE001
+        checks["database"] = f"error: {type(exc).__name__}"
+        return JSONResponse({"status": "error", "checks": checks}, status_code=503)
 
-            conn = connect()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT 1")
-                    cur.fetchone()
-                db = "ok"
-            finally:
-                conn.close()
-        except Exception:  # noqa: BLE001 — report, never raise from a readiness check
-            db = "unreachable"
-    return {"status": "ok", "database_url_set": db_configured, "db": db}
+    checks["openai"] = "configured" if os.environ.get("OPENAI_API_KEY") else "fallback"
+    airbyte_path = Path(os.environ.get("AIRBYTE_SOURCE_MAP", "config/airbyte_sources.yml"))
+    checks["airbyte_source_map"] = "configured" if airbyte_path.exists() else "missing"
+    return {"status": "ok", "checks": checks}
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -265,7 +266,14 @@ def api_brands() -> dict:
 
 
 @app.post("/api/brands")
-def api_add_brand(req: AddBrandRequest) -> dict:
+def api_add_brand(req: AddBrandRequest):
+    try:
+        db.database_url()
+    except db.DatabaseConfigError as exc:
+        return JSONResponse(
+            {"ok": False, "setup_required": "database", "message": str(exc)},
+            status_code=503,
+        )
     cfg = onboarding.add_brand(req.name, req.website)
     onboarding.start_async(cfg)
     return {"ok": True, "brand": cfg["name"], "sources": cfg["sources"]}

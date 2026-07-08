@@ -1,25 +1,18 @@
-# Maps each Airbyte Cloud staging table (in the Neon `airbyte` schema) to the
-# brand it belongs to and the mapper used to reshape its Apify dataset items into
-# our NormalizedReview contract. The `source` name reuses the exact field
-# mappings the direct Apify connectors already use
-# (src/reviewbot/connectors/apify_source.py):
-#   google_maps | yelp | tripadvisor | reddit | instagram | facebook
+# Airbyte Cloud staging tables to import into ReviewBay.
 #
-# Flow:  Apify actor -> dataset -> Airbyte "Apify Dataset" source -> Neon
-#        `airbyte.<table>` -> (this) normalize -> raw.reviews_raw -> enrich -> marts
+# Configure each Airbyte connection to write to the `airbyte` schema in Neon,
+# then add one entry per destination table below. The worker reads recent rows,
+# maps each Apify Dataset item into ReviewBay's normalized raw.reviews_raw shape,
+# and lets the existing local ML enrichment populate marts.reviews.
 #
-# App Store and Google Play are NOT here: they stay on the free Python connectors.
+# Supported mappers:
+#   google_maps | yelp | reddit | tripadvisor | instagram | facebook | web | normalized
 #
-# After you create an Airbyte connection (see airbyte/README.md), add an entry
-# with the table Airbyte writes to and the brand/mapper, then run:
-#   python -m reviewbot.ingestion.airbyte_sync
-#
-# Empty by default, so the worker is a harmless no-op until you configure Airbyte.
+# Example:
+# sources:
+#   - table: airbyte.google_maps_reviews
+#     brand: "Blue Bottle Coffee"
+#     source: google_maps
+#     mapper: google_maps
 
 sources: []
-  # - table: airbyte.blue_bottle_google_maps   # table Airbyte's sync created
-  #   brand: Blue Bottle Coffee
-  #   source: google_maps
-  # - table: airbyte.blue_bottle_reddit
-  #   brand: Blue Bottle Coffee
-  #   source: reddit

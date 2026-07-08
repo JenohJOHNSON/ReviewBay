@@ -1,11 +1,7 @@
--- ReviewBay Postgres schema (Neon + pgvector). Mirrors the old Snowflake schema
--- (snowflake/ddl.sql) one-to-one so the app logic stays the same:
---   STRING  -> text,  VARIANT -> jsonb,  VECTOR(FLOAT, 768) -> vector(768).
--- Embeddings + sentiment are still computed locally in Python (fastembed +
--- vaderSentiment); Postgres only stores the vectors and does the cosine search
--- via pgvector's `<=>` operator (see src/reviewbot/api/rag.py).
---
--- The bootstrap script runs this against DATABASE_URL; you do not run it by hand.
+-- ReviewBay Postgres schema (Neon + pgvector). Run once against DATABASE_URL.
+-- Embeddings are computed with the OpenAI embeddings API, sentiment is scored
+-- with vaderSentiment, and Postgres stores vectors/searches them with pgvector's
+-- `<=>` cosine distance operator (see src/reviewbot/api/rag.py).
 
 CREATE EXTENSION IF NOT EXISTS vector;
 

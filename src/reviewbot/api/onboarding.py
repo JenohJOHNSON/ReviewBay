@@ -15,6 +15,7 @@ import threading
 
 import yaml
 
+from .. import db
 from ..ingestion.run import CONFIG_PATH, DYNAMIC_CONFIG
 from ..ingestion.collect import FREE_PLAN, collect_until
 
@@ -31,9 +32,8 @@ ONBOARD_LIMIT = int(os.environ.get("ONBOARD_LIMIT", "50"))
 _JOBS: dict[str, dict] = {}
 _LOCK = threading.Lock()
 
-# Serialize collections so the API container never runs multiple scrapes AND
-# loads the embedding model at the same time (that memory spike was the original
-# OOM). Extra onboards queue and run one at a time. Raise
+# Serialize collections so the API container never runs multiple scrapes and
+# enrichment passes at the same time. Extra onboards queue and run one at a time. Raise
 # MAX_CONCURRENT_COLLECTIONS only on a host with RAM to spare.
 _COLLECT_GATE = threading.BoundedSemaphore(int(os.environ.get("MAX_CONCURRENT_COLLECTIONS", "1")))
 
@@ -154,10 +154,16 @@ def start_collection(brand_cfg: dict) -> None:
                 status="done", phase="done", collected=result["total"],
                 analyzed=analyzed, result=result,
             )
+    except db.DatabaseConfigError as exc:
+        log.warning("onboarding collection paused for %s: %s", name, exc)
+        with _LOCK:
+            _JOBS.setdefault(name, {})["status"] = "error"
+            _JOBS[name]["message"] = str(exc)
     except Exception:  # noqa: BLE001 — should be unreachable; collect_until is resilient
         log.exception("onboarding collection failed for %s", name)
         with _LOCK:
             _JOBS.setdefault(name, {})["status"] = "error"
+            _JOBS[name]["message"] = "Collection failed. Check the API logs for details."
     finally:
         _COLLECT_GATE.release()
 

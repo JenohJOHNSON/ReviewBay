@@ -24,8 +24,21 @@ import requests
 log = logging.getLogger(__name__)
 
 STATE_PATH = os.environ.get("ALERT_STATE_PATH", "/app/state/alert_state.json")
-MAX_PER_PASS = int(os.environ.get("ALERT_MAX_PER_PASS", "5"))
 _LOCK = threading.Lock()
+
+
+def _int_env(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value in (None, ""):
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        log.warning("Ignoring invalid %s=%r; using %d", name, value, default)
+        return default
+
+
+MAX_PER_PASS = _int_env("ALERT_MAX_PER_PASS", 5)
 
 
 def _channels() -> list[str]:
@@ -86,7 +99,7 @@ def _send_email(subject: str, text: str) -> bool:
         msg["Subject"] = subject
         msg["From"] = os.environ.get("ALERT_EMAIL_FROM", "reviewbot@localhost")
         msg["To"] = to
-        with smtplib.SMTP(host, int(os.environ.get("SMTP_PORT", "587")), timeout=15) as smtp:
+        with smtplib.SMTP(host, _int_env("SMTP_PORT", 587), timeout=15) as smtp:
             smtp.starttls()
             user, pw = os.environ.get("SMTP_USER"), os.environ.get("SMTP_PASS")
             if user and pw:

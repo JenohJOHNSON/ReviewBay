@@ -7,7 +7,7 @@ Optional brand filter narrows everything except the brand list.
 
 from __future__ import annotations
 
-import os
+from .. import db
 
 # ::text so Postgres can infer the parameter type in the `IS NULL` branch.
 # `relevant IS NOT FALSE` drops only reviews the QC pass flagged as off-topic
@@ -38,14 +38,41 @@ _SORTS = {
 
 
 def _connect():
-    from ..db import connect
+    return db.connect()
 
-    return connect()
+
+def _empty_stats(brand: str | None, setup_required: str | None = None) -> dict:
+    data = {
+        "brand": brand,
+        "brands": [],
+        "total": 0,
+        "flagged_offtopic": 0,
+        "sentiment": {"positive": 0, "neutral": 0, "negative": 0},
+        "by_source": [],
+        "by_category": [],
+        "by_brand": [],
+        "avg_rating": None,
+        "recent_negative": [],
+    }
+    if setup_required:
+        data["setup_required"] = setup_required
+    return data
+
+
+def _cols(cur) -> list[str]:
+    cols = []
+    for c in cur.description:
+        name = getattr(c, "name", None)
+        cols.append((name if name is not None else c[0]).lower())
+    return cols
 
 
 def get_stats(brand: str | None = None) -> dict:
     b = {"brand": brand}
-    conn = _connect()
+    try:
+        conn = _connect()
+    except db.DatabaseConfigError:
+        return _empty_stats(brand, "database")
     try:
         cur = conn.cursor()
 
@@ -89,7 +116,7 @@ def get_stats(brand: str | None = None) -> dict:
             """,
             b,
         )
-        cols = [c[0].lower() for c in cur.description]
+        cols = _cols(cur)
         recent_negative = []
         for row in cur.fetchall():
             r = dict(zip(cols, row))
@@ -174,7 +201,10 @@ def compare_stats(a: str | None = None, b: str | None = None) -> dict:
     per-browser (localStorage), so an unspecified side stays empty rather than
     leaking whatever brands happen to be stored.
     """
-    conn = _connect()
+    try:
+        conn = _connect()
+    except db.DatabaseConfigError:
+        return {"brands": [], "a": None, "b": None, "setup_required": "database"}
     try:
         cur = conn.cursor()
         left = _brand_block(cur, a) if a else None
@@ -208,7 +238,10 @@ def get_trend(brand: str | None = None, bucket: str = "month") -> dict:
     date are excluded. Buckets with no reviews are omitted.
     """
     fmt = "%Y" if bucket == "year" else "%Y-%m"
-    conn = _connect()
+    try:
+        conn = _connect()
+    except db.DatabaseConfigError:
+        return {"brand": brand, "bucket": bucket, "buckets": [], "setup_required": "database"}
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -242,7 +275,14 @@ def get_sentiment_alert(brand: str | None = None, recent_n: int = 30) -> dict:
     recent reviews (by post date) against the older baseline. Deterministic and
     in-app, no external notifications.
     """
-    conn = _connect()
+    try:
+        conn = _connect()
+    except db.DatabaseConfigError:
+        return {
+            "status": "setup_required",
+            "message": "Database is not configured yet.",
+            "setup_required": "database",
+        }
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -283,7 +323,16 @@ def get_reviews(
     order = _SORTS.get(sort, _SORTS["recent"])
     limit = max(1, min(int(limit), 200))
     src = source or None
-    conn = _connect()
+    try:
+        conn = _connect()
+    except db.DatabaseConfigError:
+        return {
+            "brand": brand,
+            "sort": sort if sort in _SORTS else "recent",
+            "source": src,
+            "reviews": [],
+            "setup_required": "database",
+        }
     try:
         cur = conn.cursor()
         cur.execute(
@@ -296,7 +345,7 @@ def get_reviews(
             """,
             {"brand": brand, "source": src},
         )
-        cols = [c[0].lower() for c in cur.description]
+        cols = _cols(cur)
         reviews = []
         for row in cur.fetchall():
             r = dict(zip(cols, row))

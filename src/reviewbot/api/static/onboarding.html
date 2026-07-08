@@ -123,7 +123,7 @@ function renderSteps(job){
     return `<div class="step"><span class="${cls}"></span> ${s.label} <span class="cnt">${cnt}</span></div>`;
   }).join('');
   const aCls = (done || checking) ? 'dot on' : (job.phase==='analyzing' ? 'dot run' : 'dot');
-  const analyzeRow = `<div class="step"><span class="${aCls}"></span> Analyzing sentiment and themes <span class="cnt"></span></div>`;
+  const analyzeRow = `<div class="step"><span class="${aCls}"></span> Analyzing sentiment and themes with Python ML <span class="cnt"></span></div>`;
   const qcCls = done ? 'dot on' : (checking ? 'dot run' : 'dot');
   const qcRow = `<div class="step"><span class="${qcCls}"></span> Quality check: relevance and sentiment <span class="cnt"></span></div>`;
   $('steps').innerHTML = rows + analyzeRow + qcRow;

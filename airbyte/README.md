@@ -62,7 +62,3 @@ connectors and lives in one place.
   sync never duplicates rows.
 - **Missing table is a no-op.** If a configured table has not synced yet, the
   worker logs it and skips.
-
-The old Snowflake + Terraform path (App Store / Google Play connectors) is
-superseded by this Neon + Apify-dataset design; `snowflake/normalize_airbyte.sql`
-is kept only for historical reference.

@@ -1,8 +1,8 @@
 """Retrieval-augmented generation over the reviews in Postgres.
 
 Two steps:
-  1. RETRIEVE: embed the user's question with the local model and rank the stored
-     reviews by pgvector cosine distance (one query against marts.reviews).
+  1. RETRIEVE: embed the user's question with the OpenAI embeddings API and rank
+     the stored reviews by pgvector cosine distance (one query against marts.reviews).
   2. GENERATE: hand the top reviews to OpenAI (Responses API) with a system prompt
      that forces an answer grounded only in those reviews, with inline [n] source
      links. The citations are the whole point of the product, so they are a hard
@@ -19,7 +19,7 @@ import os
 import re
 from dataclasses import dataclass
 
-from .. import embeddings
+from .. import db, embeddings
 
 log = logging.getLogger(__name__)
 
@@ -34,10 +34,10 @@ def _is_reasoning_model(m: str) -> bool:
     return m.startswith(("o1", "o3", "o4")) or "gpt-5" in m
 TOP_K = int(os.environ.get("RAG_TOP_K", "8"))
 
-# Rank marts.reviews by similarity to the question. We embed the question in
-# Python with the SAME local model used to build the stored vectors (so they are
-# comparable), then Postgres does the vector math with pgvector's <=> cosine
-# distance operator (score = 1 - distance). Optional brand filter narrows to one brand.
+# Rank marts.reviews by similarity to the question. We embed the question with
+# the same OpenAI embedding settings used to build the stored vectors, then
+# Postgres does the vector math with pgvector's <=> cosine distance operator
+# (score = 1 - distance). Optional brand filter narrows to one brand.
 _SEARCH_SQL = """
 SELECT
     text, source, source_url, author, rating, brand, sentiment,
@@ -99,15 +99,13 @@ def _confidence_and_evidence(sources: list[Source]) -> tuple[str, dict]:
 
 
 def _connect():
-    from ..db import connect
-
-    return connect()
+    return db.connect()
 
 
 def retrieve(question: str, brand: str | None = None, k: int = TOP_K) -> list[Source]:
-    qvec = json.dumps(embeddings.embed_one(question))
     conn = _connect()
     try:
+        qvec = json.dumps(embeddings.embed_one(question))
         with conn.cursor() as cur:
             cur.execute(
                 _SEARCH_SQL,
@@ -218,7 +216,9 @@ def _extractive_fallback(brand: str | None, sources: list[Source]) -> str:
     citations, so the chat and its clickable citations degrade gracefully instead
     of erroring."""
     who = f" about {brand}" if brand else ""
-    lines = [f"The AI writer is unavailable right now, so here are the most relevant reviews{who}:"]
+    lines = [
+        f"OpenAI generation is not available right now, so here are the most relevant reviews{who}:"
+    ]
     for i, s in enumerate(sources[:5], start=1):
         snippet = " ".join((s.text or "").split())
         if len(snippet) > 220:
@@ -227,26 +227,51 @@ def _extractive_fallback(brand: str | None, sources: list[Source]) -> str:
     return "\n".join(lines)
 
 
+def _openai_text(resp) -> str:
+    text = getattr(resp, "output_text", None)
+    if text:
+        return str(text)
+    parts = []
+    for item in getattr(resp, "output", []) or []:
+        for content in getattr(item, "content", []) or []:
+            value = getattr(content, "text", None)
+            if value:
+                parts.append(str(value))
+    return "".join(parts)
+
+
 def answer(question: str, brand: str | None = None, brands: list[str] | None = None) -> Answer:
     targets = _resolve_targets(question, brand, brands)
     multi = len(targets) > 1
 
-    if not targets:
-        sources = retrieve(question, brand=None)  # global (all brands in the store)
-    elif not multi:
-        sources = retrieve(question, brand=targets[0])
-    else:
-        # Retrieve a slice per brand so every named brand is represented (a single
-        # global search would let one brand dominate). Dedupe across brands.
-        per = max(3, TOP_K // len(targets) + 2)
-        seen, sources = set(), []
-        for b in targets:
-            for s in retrieve(question, brand=b, k=per):
-                key = (s.source_url, s.text)
-                if key in seen:
-                    continue
-                seen.add(key)
-                sources.append(s)
+    try:
+        if not targets:
+            sources = retrieve(question, brand=None)  # global (all brands in the store)
+        elif not multi:
+            sources = retrieve(question, brand=targets[0])
+        else:
+            # Retrieve a slice per brand so every named brand is represented (a single
+            # global search would let one brand dominate). Dedupe across brands.
+            per = max(3, TOP_K // len(targets) + 2)
+            seen, sources = set(), []
+            for b in targets:
+                for s in retrieve(question, brand=b, k=per):
+                    key = (s.source_url, s.text)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    sources.append(s)
+    except db.DatabaseConfigError:
+        return Answer(
+            answer=(
+                "ReviewBay is running, but the review database is not configured yet. "
+                "Set DATABASE_URL to your Neon Postgres URL, run postgres/schema.sql, "
+                "then restart the API and worker."
+            ),
+            sources=[],
+            confidence="Low",
+            evidence={"reviews": 0, "sources": 0, "source_types": []},
+        )
 
     if not sources:
         scope = " for those brands" if targets else ""
@@ -280,24 +305,27 @@ def answer(question: str, brand: str | None = None, brands: list[str] | None = N
         f"{context}"
     )
 
-    try:
-        from openai import OpenAI  # type: ignore
-
-        client = OpenAI()  # reads OPENAI_API_KEY
-        kwargs = dict(
-            model=OPENAI_MODEL,
-            instructions=_SYSTEM_PROMPT,
-            input=user_input,
-            max_output_tokens=1500,
-        )
-        if _is_reasoning_model(OPENAI_MODEL):
-            kwargs["reasoning"] = {"effort": OPENAI_REASONING_EFFORT}
-        resp = client.responses.create(**kwargs)
-        text = (resp.output_text or "").strip()
-        if not text:
-            raise ValueError("empty response from the model")
-    except Exception:  # noqa: BLE001
-        log.exception("openai chat failed; using extractive fallback")
+    if not os.environ.get("OPENAI_API_KEY"):
         text = _extractive_fallback(targets[0] if len(targets) == 1 else None, sources)
+    else:
+        try:
+            from openai import OpenAI  # type: ignore
+
+            client = OpenAI()  # reads OPENAI_API_KEY
+            kwargs = dict(
+                model=OPENAI_MODEL,
+                instructions=_SYSTEM_PROMPT,
+                input=user_input,
+                max_output_tokens=1500,
+            )
+            if _is_reasoning_model(OPENAI_MODEL):
+                kwargs["reasoning"] = {"effort": OPENAI_REASONING_EFFORT}
+            resp = client.responses.create(**kwargs)
+            text = _openai_text(resp).strip()
+            if not text:
+                raise ValueError("empty response from the model")
+        except Exception:  # noqa: BLE001
+            log.exception("openai chat failed; using extractive fallback")
+            text = _extractive_fallback(targets[0] if len(targets) == 1 else None, sources)
 
     return Answer(answer=text, sources=sources, confidence=confidence, evidence=evidence)

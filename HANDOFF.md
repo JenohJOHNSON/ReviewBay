@@ -33,9 +33,9 @@ review summary. See `README.md` for the full description.
 | API host | Railway | api-only; reads Neon, does not scrape |
 | Ingestion host | docker compose | local machine or an always-on box |
 
-The previous stack was Snowflake + Cortex + Claude. It was fully re-platformed.
-`snowflake/` and `airflow/` directories are legacy and not part of the running
-system.
+The previous warehouse stack was fully re-platformed to Neon/Postgres, pgvector,
+and OpenAI. Legacy warehouse and orchestration resources were removed from the
+repo so the running path is the only path documented here.
 
 ## 3. Where things live / are deployed
 
@@ -114,8 +114,8 @@ Database schema (once): `psql "$DATABASE_URL" -f postgres/ddl.sql`.
   `static/theme.css` to the new palette while keeping the legacy token names, so
   every page (landing, onboarding, chat, dashboard, report, compare) re-skinned at
   once. Rebuilt `landing.html` from the template with corrected copy: the template
-  said Snowflake / Cortex / Claude, changed to Neon + pgvector / local embeddings /
-  AI answers, and pointed the nav and CTAs at the real routes. Fabricated marketing
+  now says Neon + pgvector / OpenAI embeddings / AI answers, and pointed the nav
+  and CTAs at the real routes. Fabricated marketing
   claims (SOC 2, "+48K/day") were replaced with honest stats. Verified all pages
   render in a local preview.
 - **Roadmap complete: Phase 5 shipped (2026-07-08)**: Intelligence v2, the
@@ -128,7 +128,7 @@ Database schema (once): `psql "$DATABASE_URL" -f postgres/ddl.sql`.
   trust/observability (connector status cards simplified to Active/Inactive, chat
   confidence + evidence, scrape run history); exports (reviews CSV, print-to-PDF
   report, saved report snapshots); and cleanup (renamed loader.py, removed
-  Snowflake references, review-intelligence positioning + CASESTUDY.md).
+  legacy warehouse references, review-intelligence positioning + CASESTUDY.md).
   Trustpilot selectors VERIFIED against a live page (pulled real reviews, not
   blocked), so it is a working self-hosted source. New Neon tables:
   marts.scrape_runs, marts.saved_reports (created in the shared DB).
@@ -162,9 +162,9 @@ Database schema (once): `psql "$DATABASE_URL" -f postgres/ddl.sql`.
   - Added `TavilyConnector` (preferred `web` search when `TAVILY_API_KEY` set,
     else Apify google-search) and `FirecrawlConnector` (opt-in deep scrape,
     enabled by listing `firecrawl` in a brand's sources).
-- **Re-platform (earlier)**: Snowflake -> Neon + pgvector; Claude -> OpenAI
-  Responses API; LLM insights -> local scikit-learn; removed anthropic and
-  snowflake-connector deps; Airbyte path retargeted to Neon.
+- **Re-platform (earlier)**: warehouse storage moved to Neon + pgvector; Claude
+  moved to OpenAI Responses API; LLM insights moved to local scikit-learn;
+  removed old warehouse connector deps; Airbyte path retargeted to Neon.
 - **Web UI + deploy (earlier)**: landing page, FAQ, per-browser brand history,
   "coming soon" alerts panel, chat system prompt, clickable theme chips; deployed
   the API to Railway.
@@ -186,8 +186,8 @@ Database schema (once): `psql "$DATABASE_URL" -f postgres/ddl.sql`.
       `config/airbyte_sources.yml`.
 - [ ] Verify the live Railway URL end to end (health, login, dashboard, chat)
       once the URL is shared.
-- [ ] Housekeeping: rename `ingestion/snowflake_loader.py` -> `loader.py`; scrub
-      remaining "Snowflake" mentions in code comments and landing-page copy.
+- [x] Housekeeping: removed legacy warehouse/Airflow resources and scrubbed stale
+      references from docs and code comments.
 
 ## 9. Known gotchas
 

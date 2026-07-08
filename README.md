@@ -155,6 +155,7 @@ Worth knowing:
 
 ```
 config/brands.yml              brands + keywords + sources (control surface)
+config/airbyte_sources.yml     Airbyte staging tables -> ReviewBay mappers
 postgres/ddl.sql               raw + marts schemas, pgvector, HNSW index (run once)
 src/reviewbot/
   models.py                    NormalizedReview + brand-keyed stable id
@@ -169,6 +170,9 @@ src/reviewbot/
     collect.py                 collect_until orchestrator (free-first, target ~200)
     run.py                     build_connectors + poll loop
     loader.py                  Neon upsert into raw.reviews_raw
+    airbyte_normalize.py       optional Airbyte staging import
+  airbyte/                     Airbyte Cloud normalizer used by the worker
+  worker.py                    Airbyte import + local sources + enrichment loop
   enrich/run.py                raw -> marts: OpenAI embed + sentiment
   api/
     main.py                    FastAPI app + routes + auth gate + /healthz /readyz
@@ -177,13 +181,14 @@ src/reviewbot/
     insights.py                scikit-learn review summary (no LLM)
     stats.py  export.py        dashboard aggregations, CSV export
     static/                    the web UI (terminal-editorial design system)
-docker/                        api.Dockerfile, ingestion.Dockerfile
-docker-compose.yml             api + ingestion services
+docker/                        api.Dockerfile, worker.Dockerfile, ingestion.Dockerfile
+docker-compose.yml             api + worker services
 railway.json                   Railway build (api) config
 ```
 
-`snowflake/`, `airflow/`, and `airbyte/` are legacy/optional and not part of the
-running system (see [Airbyte](#airbyte-optional) below).
+The default Docker runtime uses the API plus the worker. Old warehouse and
+Airflow orchestration files have been removed to keep the repo focused on the
+current Neon/Postgres path.
 
 ---
 
@@ -202,8 +207,8 @@ cp .env.example .env      # set DATABASE_URL, OPENAI_API_KEY, and any scraper ke
 
 # 3. Run
 docker compose up --build
-#   ingestion  -> scrapes on a loop, upserts raw, enriches into marts
-#   api        -> http://localhost:8000
+#   worker  -> imports Airbyte rows, runs local sources, enriches into marts
+#   api     -> http://localhost:8000
 ```
 
 Ask it something:
@@ -221,7 +226,7 @@ Without Docker:
 pip install -r requirements.txt
 export PYTHONPATH=src
 set -a && source .env && set +a
-RUN_ONCE=1 python -m reviewbot.ingestion.run   # one scrape + enrich pass
+RUN_ONCE=1 python -m reviewbot.worker          # one import/source/enrich pass
 uvicorn reviewbot.api.main:app --reload        # app on :8000
 ```
 
@@ -238,7 +243,9 @@ Key environment variables (all in `.env` locally, or the host's variables tab):
 | `OPENAI_MODEL` | Chat model; set to one your key supports |
 | `TAVILY_API_KEY` | Web search (else falls back to Apify) |
 | `FIRECRAWL_API_KEY` | Opt-in deep scrape |
-| `APIFY_TOKEN` | Walled-garden sources (last resort) |
+| `AIRBYTE_SOURCE_MAP` | Airbyte staging table map (default `config/airbyte_sources.yml`) |
+| `LOCAL_SOURCES` | Free sources the worker runs directly (default `app_store,google_play`) |
+| `APIFY_TOKEN` | Walled-garden sources via Airbyte/Apify, or direct last resort |
 | `AUTH_USER` / `AUTH_PASS` | Optional HTTP basic-auth gate on the whole app |
 | `COLLECT_TARGET` / `COLLECT_FLOOR` | Sample target (default 200 / 150) |
 
@@ -262,12 +269,11 @@ A couple of hard-won deployment notes:
 
 ## Airbyte (optional)
 
-`airbyte/` and `ingestion/airbyte_normalize.py` are scaffolding for a managed-ELT
-route: Airbyte Cloud can land any Apify Dataset source into a Neon `airbyte`
-staging schema on a schedule, and a small worker reshapes it into
-`raw.reviews_raw` using the same mappers the connectors use. It is **not wired into
-the running app**, the direct connectors do all ingestion. It exists as an
-optional at-scale option.
+Airbyte Cloud can land any Apify Dataset source into a Neon `airbyte` staging
+schema on a schedule, and the worker reshapes it into `raw.reviews_raw` using the
+same mappers the direct connectors use. The Python worker also keeps free local
+sources such as App Store and Google Play running directly, so Airbyte is only
+needed for the sources you choose to manage there.
 
 ---
 

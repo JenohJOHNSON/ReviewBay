@@ -25,9 +25,8 @@ log = logging.getLogger(__name__)
 # text-embedding-3-small at 768 dims matches the VECTOR(768) column in the DDL.
 _DEFAULT_MODEL = "text-embedding-3-small"
 _env_model = os.environ.get("EMBED_MODEL", _DEFAULT_MODEL).strip()
-# Guard: a leftover non-OpenAI value (e.g. the old local-model name
-# "snowflake/snowflake-arctic-embed-m") passed straight to the OpenAI API 400s as
-# an invalid model id. Ignore anything that isn't an OpenAI embedding model.
+# Guard: a leftover non-OpenAI local-model value passed straight to the OpenAI API
+# 400s as an invalid model id. Ignore anything that isn't an OpenAI embedding model.
 if not _env_model.startswith("text-embedding"):
     log.warning("EMBED_MODEL=%r is not an OpenAI embedding model; using %s", _env_model, _DEFAULT_MODEL)
     _env_model = _DEFAULT_MODEL
