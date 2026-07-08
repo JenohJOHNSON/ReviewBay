@@ -6,18 +6,22 @@
 <title>ReviewBay Dashboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Funnel+Display:wght@400;500;600;700&family=Public+Sans:wght@400;500;600&family=Martian+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/theme.css">
 <script src="/static/brands.js"></script>
 <style>
   .toolbar select { min-width:170px; }
   #updated { font-size:12px; }
-  .kpi { font-size:34px; font-weight:800; letter-spacing:-.02em; }
+  .kpi { font-family:var(--font-mono); font-size:34px; font-weight:500; letter-spacing:-.02em; }
   .kpi small { font-size:14px; color:var(--muted); font-weight:500; }
   .row { display:flex; align-items:center; gap:10px; margin:9px 0; font-size:14px; }
   .row .lbl { width:104px; color:var(--muted); text-transform:capitalize; }
   .row .bar { flex:1; height:10px; }
   .row .val { width:44px; text-align:right; color:var(--muted); font-weight:600; }
+  .catgroup { margin:0 0 14px; }
+  .catgroup:last-child { margin-bottom:0; }
+  .cathead { display:flex; justify-content:space-between; align-items:baseline; font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--accent); border-bottom:1px solid var(--line); padding-bottom:5px; margin-bottom:6px; }
+  .cathead .catsub { font-weight:600; color:var(--muted); letter-spacing:0; }
   .donutwrap { display:flex; align-items:center; gap:18px; }
   .donut { width:120px; height:120px; }
   .legend div { display:flex; align-items:center; gap:8px; margin:7px 0; font-size:14px; }
@@ -31,6 +35,8 @@
   .revhead { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px; }
   .revhead label { display:inline; text-transform:none; letter-spacing:0; font-size:13px; font-weight:500; margin:0; color:var(--muted); }
   .revhead select { padding:8px 12px; font-size:14px; }
+  .dl { font-size:13px; font-weight:600; color:var(--accent); text-decoration:none; border:1px solid var(--line); padding:7px 12px; border-radius:0; }
+  .dl:hover { background:var(--accent-soft); }
   .ai .sub { text-transform:none; font-weight:400; color:var(--muted); font-size:12px; letter-spacing:0; }
   .summary { font-size:15px; line-height:1.6; margin:2px 0 16px; }
   .proscons { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
@@ -38,15 +44,67 @@
   .proscons h4 { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
   .proscons ul { margin:6px 0 0; padding-left:18px; }
   .proscons li { margin:5px 0; font-size:14px; }
-  .beh { margin:14px 0 0; font-size:14px; color:var(--ink); background:var(--surface-2); padding:11px 13px; border-radius:10px; }
+  .beh { margin:14px 0 0; font-size:14px; color:var(--ink); background:var(--surface-2); padding:11px 13px; border-radius:0; }
   .tt { margin:16px 0 8px; font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
-  .theme { display:inline-block; border:1px solid var(--line); border-radius:20px; padding:5px 12px; margin:0 6px 6px 0; font-size:13px; font-weight:500; cursor:pointer; background:none; font-family:var(--font); transition:background .12s ease; }
+  .theme { display:inline-block; border:1px solid var(--line); border-radius:0; padding:5px 12px; margin:0 6px 6px 0; font-size:13px; font-weight:500; cursor:pointer; background:none; font-family:var(--font); transition:background .12s ease; }
   .theme:hover { background:var(--accent-soft); }
   .theme.sel { background:var(--accent-soft); }
-  #themeDesc { margin-top:8px; font-size:14px; line-height:1.55; background:var(--surface-2); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+  #themeDesc { margin-top:8px; font-size:14px; line-height:1.55; background:var(--surface-2); border:1px solid var(--line); border-radius:0; padding:12px 14px; }
   #themeDesc.hidden { display:none; }
   #themeDesc .tname { font-weight:700; color:var(--ink); margin-right:6px; }
   .alertbar { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .conn { display:flex; align-items:flex-start; gap:10px; padding:9px 0; border-bottom:1px solid var(--line); font-size:14px; }
+  .conn:last-child { border-bottom:none; }
+  .conn .lbl { width:150px; font-weight:600; flex:0 0 auto; }
+  .conn .note { color:var(--muted); font-size:13px; flex:1; }
+  .cstat { flex:0 0 auto; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; padding:2px 9px; border-radius:0; border:1px solid var(--line); }
+  .cstat.active { color:var(--pos); border-color:var(--pos); }
+  .cstat.inactive { color:var(--muted); }
+  .cstat.needs_verification { color:var(--neu); border-color:var(--neu); }
+  .cstat.disabled { color:var(--muted); }
+  .cathead2 { font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--accent); margin:14px 0 4px; }
+  .cathead2:first-child { margin-top:0; }
+  table.runs { width:100%; border-collapse:collapse; font-size:13px; }
+  table.runs th { text-align:left; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:.04em; font-size:11px; padding:6px 10px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  table.runs td { padding:8px 10px; border-bottom:1px solid var(--line); }
+  table.runs tr:last-child td { border-bottom:none; }
+  .trendchart { display:flex; align-items:flex-end; gap:6px; overflow-x:auto; padding:10px 2px 0; min-height:120px; }
+  .tbar { display:flex; flex-direction:column; align-items:center; flex:0 0 auto; }
+  .tstack { width:26px; display:flex; flex-direction:column; border-radius:0; overflow:hidden; }
+  .tstack > div { width:100%; }
+  .tlabel { font-size:10px; color:var(--muted); margin-top:6px; transform:rotate(-45deg); white-space:nowrap; transform-origin:center; height:34px; }
+  .trendlegend { display:flex; gap:16px; font-size:12px; color:var(--muted); margin-top:6px; }
+  .trendlegend span { display:inline-flex; align-items:center; gap:6px; }
+  .trendlegend i { width:10px; height:10px; border-radius:0; display:inline-block; }
+  .trendwrap { position:relative; }
+  .tbar { cursor:pointer; }
+  .tbar .tstack { transition:filter .12s ease, outline .12s ease; }
+  .tbar:hover .tstack { filter:brightness(1.3); outline:1px solid var(--accent); }
+  .ttip { position:absolute; z-index:6; pointer-events:none; opacity:0; transition:opacity .1s ease;
+          background:var(--surface-2); border:1px solid var(--line-strong); padding:10px 12px;
+          font-size:12px; min-width:158px; box-shadow:0 6px 18px rgba(0,0,0,.45); }
+  .ttip.show { opacity:1; }
+  .ttip .tp { font-family:var(--font-mono); font-size:11px; color:var(--accent); text-transform:uppercase; letter-spacing:.06em; margin-bottom:6px; }
+  .ttip .ttr { display:flex; align-items:center; gap:8px; margin:3px 0; color:var(--ink); }
+  .ttip .ttr i { width:9px; height:9px; border-radius:0; flex:0 0 auto; }
+  .ttip .ttr b { margin-left:auto; font-weight:600; }
+  .ttip .tttot { color:var(--muted); margin-top:6px; font-size:11px; border-top:1px solid var(--line); padding-top:5px; }
+  .trendnote { margin-top:12px; font-size:12px; color:var(--muted); line-height:1.55; background:var(--surface-2);
+               border:1px solid var(--line); border-left:2px solid var(--neu); padding:9px 12px; }
+  .qcnote { margin:2px 0 12px; font-size:12.5px; color:var(--muted); line-height:1.5; background:var(--surface-2);
+            border:1px solid var(--line); border-left:2px solid var(--accent); padding:9px 12px; }
+  /* shared floating tooltip for the one-sentence hover insights */
+  .ptip { position:fixed; z-index:50; pointer-events:none; opacity:0; transition:opacity .1s ease; max-width:280px;
+          background:var(--surface-2); border:1px solid var(--line-strong); padding:9px 12px; font-size:12.5px;
+          line-height:1.5; color:var(--ink); box-shadow:0 6px 18px rgba(0,0,0,.5); }
+  .ptip.show { opacity:1; }
+  .legend div[data-tip], .row[data-tip], .cathead[data-tip] { cursor:help; }
+  .legend div[data-tip]:hover, .row[data-tip]:hover { color:var(--ink); }
+  .cathead[data-tip]:hover { filter:brightness(1.15); }
+  .sbanner { border-radius:0; padding:11px 15px; font-size:14px; font-weight:500; margin-bottom:14px; border:1px solid var(--line); display:flex; align-items:center; gap:10px; }
+  .sbanner .tag { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; padding:2px 9px; border-radius:0; border:1px solid currentColor; }
+  .sbanner.ok { color:var(--pos); } .sbanner.watch { color:var(--neu); } .sbanner.drop { color:var(--neg); }
+  .sbanner .msg { color:var(--ink); font-weight:400; }
 </style>
 </head>
 <body>
@@ -56,6 +114,7 @@
   <nav class="nav">
     <a href="/start">Add brand</a>
     <a href="/dashboard" class="active">Dashboard</a>
+    <a href="/report" id="reportLink">Report</a>
     <a href="/compare">Compare</a>
     <a href="/chat" id="chatLink">Chat</a>
   </nav>
@@ -65,21 +124,71 @@
     <select id="brand" title="Pick one of your brands"></select>
     <span id="updated" class="muted"></span>
   </div>
+  <div id="sentAlert"></div>
   <div id="insights"></div>
   <div id="content"><div class="empty">Loading</div></div>
+  <div id="trendPanel"></div>
   <div id="reviews"></div>
+  <div id="runsPanel"></div>
+  <div id="connectorsPanel"></div>
   <div id="alertsPanel"></div>
 </main>
 <script>
 const brandSel = document.getElementById('brand');
 const content = document.getElementById('content');
 const insightsEl = document.getElementById('insights');
-function esc(s){ return (s||'').toString().replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function esc(s){ return (s||'').toString().replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+// One-sentence, deterministic reads shown on hover over the sentiment and source
+// breakdowns. Honest and simple, no LLM.
+function sentInsight(kind, n, tot){
+  const p = tot ? Math.round(100*n/tot) : 0;
+  if(kind==='positive') return p>=60 ? `Strongly positive: about ${p}% of reviews are happy ones.`
+    : p>=45 ? `Leans positive (${p}%), though real criticism is mixed in.`
+    : p>=30 ? `Only ${p}% are positive, praise is not the majority here.`
+    : `Positivity is low at ${p}%; most reviews are neutral or critical.`;
+  if(kind==='negative') return p>=40 ? `High negativity (${p}%), a reputation risk worth digging into.`
+    : p>=25 ? `A notable ${p}% are negative; worth reading the recurring complaints.`
+    : `Negativity is contained at ${p}%.`;
+  return `${p}% are neutral: factual or mixed reviews rather than clearly for or against.`;
+}
+function srcInsight(label, count, tot, isTop){
+  const p = tot ? Math.round(100*count/tot) : 0;
+  if(isTop) return `${label} is the top source, ${p}% of everything collected for this brand.`;
+  if(count<=2) return `Only ${count} from ${label}; thin coverage on this channel.`;
+  return `${label} accounts for ${p}% of collected reviews.`;
+}
+function catInsight(cat, count, tot){
+  const p = tot ? Math.round(100*count/tot) : 0;
+  return p>=50 ? `${cat} is where this brand is discussed most (${p}% of all mentions).`
+    : p>=25 ? `${cat} makes up ${p}% of the conversation.`
+    : `${cat} is a smaller slice (${p}%) of the conversation.`;
+}
+// One shared floating tooltip, wired by delegation so it works after every
+// re-render. Shows the hovered element's data-tip sentence.
+function setupTips(){
+  if(window._tipReady) return; window._tipReady = true;
+  const tip = document.createElement('div'); tip.className='ptip'; document.body.appendChild(tip);
+  document.addEventListener('mouseover', e => {
+    const t = e.target.closest('[data-tip]'); if(!t) return;
+    tip.textContent = t.getAttribute('data-tip'); tip.classList.add('show');
+    const r = t.getBoundingClientRect();
+    let left = r.left + r.width/2 - tip.offsetWidth/2;
+    left = Math.max(8, Math.min(left, window.innerWidth - tip.offsetWidth - 8));
+    let top = r.top - tip.offsetHeight - 8; if(top < 8) top = r.bottom + 8;
+    tip.style.left = left+'px'; tip.style.top = top+'px';
+  });
+  document.addEventListener('mouseout', e => {
+    const t = e.target.closest('[data-tip]'); if(t && !t.contains(e.relatedTarget)) tip.classList.remove('show');
+  });
+}
 
 async function load(brand) {
   // Carry the selected brand into the Chat link so Chat asks about this brand.
   const cl = document.getElementById('chatLink');
   if (cl) cl.href = '/chat' + (brand ? '?brand=' + encodeURIComponent(brand) : '');
+  const rl = document.getElementById('reportLink');
+  if (rl) rl.href = '/report' + (brand ? '?brand=' + encodeURIComponent(brand) : '');
   content.innerHTML = '<div class="empty">Loading</div>';
   let d;
   try { d = await (await fetch('/api/stats' + (brand ? '?brand=' + encodeURIComponent(brand) : ''))).json(); }
@@ -92,11 +201,25 @@ async function load(brand) {
   const deg = { pos: 360*s.positive/tot, neu: 360*s.neutral/tot };
   const donut = `conic-gradient(var(--pos) 0 ${deg.pos}deg, var(--neu) ${deg.pos}deg ${deg.pos+deg.neu}deg, var(--neg) ${deg.pos+deg.neu}deg 360deg)`;
 
+  window._brandSources = d.by_source || [];   // full platform list for the reviews filter
+  window._flaggedOfftopic = d.flagged_offtopic || 0;   // QC-filtered off-topic count
   const maxSrc = Math.max(...d.by_source.map(x=>x.count), 1);
-  const sourceRows = d.by_source.map(x =>
-    `<div class="row"><div class="lbl">${esc(x.source)}</div>
-      <div class="bar"><span style="width:${Math.round(100*x.count/maxSrc)}%"></span></div>
-      <div class="val">${x.count}</div></div>`).join('') || '<div class="muted">None</div>';
+  // Group sources under their category (App Reviews / Review Sites / Social /
+  // Web & News) so "web" stops being a catch-all for everything.
+  const cats = (d.by_category && d.by_category.length)
+    ? d.by_category
+    : [{category:'All sources', count:0, sources:d.by_source.map(x=>({source:x.source,label:x.source,count:x.count}))}];
+  const topSource = (d.by_source[0] || {}).source;
+  const sourceRows = cats.map(c => {
+    const rows = c.sources.map(x => {
+      const tip = esc(srcInsight(x.label||x.source, x.count, d.total, x.source===topSource));
+      return `<div class="row" data-tip="${tip}"><div class="lbl">${esc(x.label||x.source)}</div>
+        <div class="bar"><span style="width:${Math.round(100*x.count/maxSrc)}%"></span></div>
+        <div class="val">${x.count}</div></div>`;
+    }).join('');
+    const catTip = esc(catInsight(c.category, c.count, d.total));
+    return `<div class="catgroup"><div class="cathead" data-tip="${catTip}">${esc(c.category)}<span class="catsub">${c.count}</span></div>${rows}</div>`;
+  }).join('') || '<div class="muted">None</div>';
 
   content.innerHTML = `
     <div class="grid">
@@ -111,9 +234,9 @@ async function load(brand) {
         <div class="donutwrap">
           <div class="donut" style="background:${donut}"></div>
           <div class="legend">
-            <div><span class="dot" style="background:var(--pos)"></span> Positive, ${s.positive} (${pct(s.positive)}%)</div>
-            <div><span class="dot" style="background:var(--neu)"></span> Neutral, ${s.neutral} (${pct(s.neutral)}%)</div>
-            <div><span class="dot" style="background:var(--neg)"></span> Negative, ${s.negative} (${pct(s.negative)}%)</div>
+            <div data-tip="${esc(sentInsight('positive', s.positive, tot))}"><span class="dot" style="background:var(--pos)"></span> Positive, ${s.positive} (${pct(s.positive)}%)</div>
+            <div data-tip="${esc(sentInsight('neutral', s.neutral, tot))}"><span class="dot" style="background:var(--neu)"></span> Neutral, ${s.neutral} (${pct(s.neutral)}%)</div>
+            <div data-tip="${esc(sentInsight('negative', s.negative, tot))}"><span class="dot" style="background:var(--neg)"></span> Negative, ${s.negative} (${pct(s.negative)}%)</div>
           </div>
         </div>
       </div>
@@ -124,7 +247,7 @@ async function load(brand) {
 }
 
 async function loadInsights(brand){
-  insightsEl.innerHTML = `<div class="card ai"><h3>AI executive summary</h3><div class="muted">Analyzing reviews with AI</div></div>`;
+  insightsEl.innerHTML = `<div class="card ai"><h3>Review summary</h3><div class="muted">Summarizing reviews</div></div>`;
   let d;
   try { d = await (await fetch('/api/insights' + (brand ? '?brand=' + encodeURIComponent(brand) : ''))).json(); }
   catch(e){ insightsEl.innerHTML = ''; return; }
@@ -138,7 +261,7 @@ async function loadInsights(brand){
   const themeHint = themeList.length ? '<span class="sub" style="display:block;margin:0 0 8px">Click a theme to see what it means</span>' : '';
   insightsEl.innerHTML = `
     <div class="card ai">
-      <h3>AI executive summary <span class="sub">, ${d.reviews_analyzed||0} reviews analyzed</span></h3>
+      <h3>Review summary <span class="sub">, ${d.reviews_analyzed||0} reviews analyzed</span></h3>
       <p class="summary">${esc(d.summary||'')}</p>
       <div class="proscons">
         <div><h4>What they love</h4><ul>${li(d.pros)}</ul></div>
@@ -179,13 +302,17 @@ function loadAlerts(){
     </div></div>`;
 }
 
-let reviewSort = 'negative';
+let reviewSort = 'negative', reviewFilter = '', _reviewBrand = null;
 function sentClass(s){ return s==='positive'?'pos':s==='negative'?'neg':'neu'; }
 async function loadReviews(brand){
+  if (brand !== _reviewBrand) { reviewFilter = ''; _reviewBrand = brand; }  // reset filter per brand
   const el = document.getElementById('reviews');
   let d;
-  try { d = await (await fetch('/api/reviews?sort=' + encodeURIComponent(reviewSort) + (brand ? '&brand=' + encodeURIComponent(brand) : ''))).json(); }
-  catch(e){ el.innerHTML = ''; return; }
+  try {
+    d = await (await fetch('/api/reviews?sort=' + encodeURIComponent(reviewSort)
+      + (brand ? '&brand=' + encodeURIComponent(brand) : '')
+      + (reviewFilter ? '&source=' + encodeURIComponent(reviewFilter) : ''))).json();
+  } catch(e){ el.innerHTML = ''; return; }
   const list = (d.reviews||[]).map(n => `
     <div class="rev-item">
       <span class="pill">${esc(n.source)}</span>${n.rating!=null?`<span class="pill">${n.rating}/5</span>`:''}
@@ -193,17 +320,148 @@ async function loadReviews(brand){
       ${brand?'':`<span class="pill">${esc(n.brand)}</span>`}
       <a href="${esc(n.source_url)}" target="_blank" rel="noopener">open</a>
       <div class="muted" style="margin-top:4px">${esc(n.excerpt)}</div>
-    </div>`).join('') || '<div class="empty">No reviews yet for this selection.</div>';
-  const opts = [['negative','Most negative'],['positive','Most positive'],['recent','Newest'],['oldest','Oldest'],['rating_low','Lowest rating'],['rating_high','Highest rating']]
+    </div>`).join('') || '<div class="empty">No reviews for this selection.</div>';
+  const opts = [['negative','Most negative'],['positive','Most positive'],['recent','Newest'],['oldest','Oldest'],['rating_low','Lowest rating'],['rating_high','Highest rating'],['platform','By platform']]
     .map(([v,l]) => `<option value="${v}"${v===reviewSort?' selected':''}>${l}</option>`).join('');
+  // Platform options: the brand's full source list from stats, else the distinct
+  // sources in the returned reviews (so the list stays complete while filtered).
+  const srcs = (window._brandSources && window._brandSources.length)
+    ? window._brandSources.map(x=>x.source)
+    : (d.reviews||[]).map(r=>r.source);
+  const platforms = [...new Set(srcs)].filter(Boolean).sort();
+  const fopts = '<option value="">All platforms</option>'
+    + platforms.map(p => `<option value="${esc(p)}"${p===reviewFilter?' selected':''}>${esc(p)}</option>`).join('');
+  const csvHref = '/api/export/reviews.csv' + (brand ? '?brand=' + encodeURIComponent(brand) : '')
+    + (reviewFilter ? (brand?'&':'?') + 'source=' + encodeURIComponent(reviewFilter) : '');
+  const flagged = window._flaggedOfftopic || 0;
+  const qcNote = flagged > 0
+    ? `<div class="qcnote">A quality check filtered out ${flagged} off-topic mention${flagged===1?'':'s'} that only matched the brand name by coincidence. Sentiment and counts above reflect the relevant reviews only.</div>`
+    : '';
   el.innerHTML = `<div class="card full" style="margin-top:14px">
     <div class="revhead"><h3 style="margin:0">Reviews</h3><span style="flex:1"></span>
+      <a class="dl" href="${csvHref}">Download CSV</a>
+      <label for="revFilter">Filter</label><select id="revFilter">${fopts}</select>
       <label for="revSort">Sort by</label><select id="revSort">${opts}</select></div>
+    ${qcNote}
     ${list}</div>`;
   document.getElementById('revSort').onchange = (e) => { reviewSort = e.target.value; loadReviews(brand); };
+  document.getElementById('revFilter').onchange = (e) => { reviewFilter = e.target.value; loadReviews(brand); };
 }
 
-brandSel.addEventListener('change', () => { load(brandSel.value); loadInsights(brandSel.value); loadReviews(brandSel.value); });
+brandSel.addEventListener('change', () => { load(brandSel.value); loadSentimentAlert(brandSel.value); loadInsights(brandSel.value); loadTrend(brandSel.value); loadReviews(brandSel.value); loadRuns(brandSel.value); });
+
+async function loadSentimentAlert(brand){
+  const el = document.getElementById('sentAlert');
+  let d;
+  try { d = await (await fetch('/api/sentiment-alert' + (brand ? '?brand=' + encodeURIComponent(brand) : ''))).json(); }
+  catch(e){ el.innerHTML=''; return; }
+  if(!d || d.status==='insufficient'){ el.innerHTML=''; return; }
+  const tag = d.status==='drop' ? 'Sentiment drop' : d.status==='watch' ? 'Watch' : 'Steady';
+  el.innerHTML = `<div class="sbanner ${esc(d.status)}"><span class="tag">${tag}</span><span class="msg">${esc(d.message)}</span></div>`;
+}
+
+async function loadTrend(brand){
+  const el = document.getElementById('trendPanel');
+  let d;
+  try { d = await (await fetch('/api/trend?bucket=month' + (brand ? '&brand=' + encodeURIComponent(brand) : ''))).json(); }
+  catch(e){ el.innerHTML=''; return; }
+  const buckets = d.buckets || [];
+  if(buckets.length < 2){ el.innerHTML=''; return; }  // a single bucket is not a trend
+  const maxT = Math.max(...buckets.map(b=>b.total), 1);
+  const H = 90;
+  const pctPos = b => b.total ? b.positive / b.total : 0;
+  const bars = buckets.map((b,i) => {
+    const h = Math.max(6, Math.round(H * b.total / maxT));
+    const seg = (n, c) => n>0 ? `<div style="height:${Math.round(100*n/b.total)}%;background:${c}"></div>` : '';
+    return `<div class="tbar" data-i="${i}">
+      <div class="tstack" style="height:${h}px">
+        ${seg(b.positive,'var(--pos)')}${seg(b.neutral,'var(--neu)')}${seg(b.negative,'var(--neg)')}
+      </div><div class="tlabel">${esc(b.period)}</div></div>`;
+  }).join('');
+
+  // Flag high volatility: a big swing in the positive share between periods, or a
+  // low-sample period, both often reflect the dataset more than reality.
+  let maxSwing = 0;
+  for(let i=1;i<buckets.length;i++) maxSwing = Math.max(maxSwing, Math.abs(pctPos(buckets[i])-pctPos(buckets[i-1])));
+  const minTotal = Math.min(...buckets.map(b=>b.total));
+  const volatile = maxSwing >= 0.4 || minTotal < 5;
+  const note = volatile ? `<div class="trendnote">Some of these swings can reflect the dataset, not just real sentiment.
+    We prioritise the most recent, relevant reviews and use small samples to keep API costs low, so a light period can look more volatile than it is.</div>` : '';
+
+  el.innerHTML = `<div class="card full" style="margin-top:14px"><h3>Sentiment over time</h3>
+    <div class="trendwrap"><div class="trendchart">${bars}</div><div class="ttip" id="trendTip"></div></div>
+    <div class="trendlegend"><span><i style="background:var(--pos)"></i>Positive</span>
+      <span><i style="background:var(--neu)"></i>Neutral</span>
+      <span><i style="background:var(--neg)"></i>Negative</span></div>
+    ${note}</div>`;
+
+  // Interactive hover: a small context box following the hovered bar.
+  const wrap = el.querySelector('.trendwrap');
+  const tip = el.querySelector('#trendTip');
+  const pc = (n,t) => t ? Math.round(100*n/t) : 0;
+  wrap.querySelectorAll('.tbar').forEach(bar => {
+    bar.addEventListener('mouseenter', () => {
+      const b = buckets[+bar.dataset.i];
+      tip.innerHTML = `<div class="tp">${esc(b.period)}</div>
+        <div class="ttr"><i style="background:var(--pos)"></i>Positive <b>${pc(b.positive,b.total)}% (${b.positive})</b></div>
+        <div class="ttr"><i style="background:var(--neu)"></i>Neutral <b>${pc(b.neutral,b.total)}% (${b.neutral})</b></div>
+        <div class="ttr"><i style="background:var(--neg)"></i>Negative <b>${pc(b.negative,b.total)}% (${b.negative})</b></div>
+        <div class="tttot">${b.total} review${b.total===1?'':'s'} this period</div>`;
+      tip.classList.add('show');
+      const wr = wrap.getBoundingClientRect(), br = bar.getBoundingClientRect();
+      let left = br.left - wr.left + br.width/2 - tip.offsetWidth/2;
+      left = Math.max(0, Math.min(left, wr.width - tip.offsetWidth));
+      tip.style.left = left + 'px';
+      tip.style.top = Math.max(0, (br.top - wr.top) - tip.offsetHeight - 8) + 'px';
+    });
+    bar.addEventListener('mouseleave', () => tip.classList.remove('show'));
+  });
+}
+
+async function loadRuns(brand){
+  const el = document.getElementById('runsPanel');
+  let d;
+  try { d = await (await fetch('/api/runs?limit=20' + (brand ? '&brand=' + encodeURIComponent(brand) : ''))).json(); }
+  catch(e){ el.innerHTML=''; return; }
+  const runs = d.runs || [];
+  if(!runs.length){ el.innerHTML=''; return; }
+  const stCls = s => s==='ok'?'active':(s==='error'?'disabled':'needs_verification');
+  const rows = runs.map(r => {
+    const when = r.started_at ? new Date(r.started_at).toLocaleString() : '';
+    const dur = r.duration_ms!=null ? (r.duration_ms/1000).toFixed(1)+'s' : '';
+    return `<tr>
+      <td>${esc(when)}</td>
+      <td>${esc(r.brand)}</td>
+      <td class="muted">${esc(r.sources||'')}</td>
+      <td style="text-align:right">${r.reviews_found||0}</td>
+      <td><span class="cstat ${stCls(r.status)}">${esc(r.status)}</span></td>
+      <td style="text-align:right">${esc(dur)}</td></tr>`;
+  }).join('');
+  el.innerHTML = `<div class="card full" style="margin-top:14px"><h3>Scrape run history</h3>
+    <div style="overflow-x:auto"><table class="runs">
+      <thead><tr><th>When</th><th>Brand</th><th>Sources</th><th style="text-align:right">Found</th><th>Status</th><th style="text-align:right">Duration</th></tr></thead>
+      <tbody>${rows}</tbody></table></div></div>`;
+}
+
+async function loadConnectors(){
+  const el = document.getElementById('connectorsPanel');
+  let d;
+  try { d = await (await fetch('/api/connectors')).json(); }
+  catch(e){ el.innerHTML=''; return; }
+  const conns = d.connectors || [];
+  if(!conns.length){ el.innerHTML=''; return; }
+  const order = ['App Reviews','Review Sites','Social','Web & News'];
+  const byCat = {};
+  conns.forEach(c => { (byCat[c.category] = byCat[c.category]||[]).push(c); });
+  const cats = order.filter(c=>byCat[c]).concat(Object.keys(byCat).filter(c=>!order.includes(c)));
+  const body = cats.map(cat => {
+    const rows = byCat[cat].map(c =>
+      `<div class="conn"><span class="lbl">${esc(c.label)}</span>`
+      + `<span class="cstat ${esc(c.status)}">${esc(c.status)}</span></div>`).join('');
+    return `<div class="cathead2">${esc(cat)}</div>${rows}`;
+  }).join('');
+  el.innerHTML = `<div class="card full" style="margin-top:14px"><h3>Connector status</h3>${body}</div>`;
+}
 
 function showEmpty(){
   content.innerHTML = `<div class="card"><div class="empty">
@@ -212,17 +470,22 @@ function showEmpty(){
 }
 
 function init(){
+  setupTips();
   const qsBrand = (new URLSearchParams(location.search).get('brand') || '').trim();
   // Opening a brand via a direct link adds it to this browser's own history.
   if (qsBrand && window.RB_Brands) RB_Brands.add(qsBrand);
   const brands = window.RB_Brands ? RB_Brands.list() : [];
   loadAlerts();
+  loadConnectors();
   if (!brands.length) { showEmpty(); return; }
   const chosen = qsBrand || brands[0];
   RB_Brands.fillSelect(brandSel, { chosen });
   load(chosen);
+  loadSentimentAlert(chosen);
   loadInsights(chosen);
+  loadTrend(chosen);
   loadReviews(chosen);
+  loadRuns(chosen);
   setInterval(() => load(brandSel.value), 60000);  // stats refresh; insights are cached server-side
 }
 init();

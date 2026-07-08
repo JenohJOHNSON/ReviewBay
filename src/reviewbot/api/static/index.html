@@ -6,28 +6,36 @@
 <title>ReviewBay Chat</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Funnel+Display:wght@400;500;600;700&family=Public+Sans:wght@400;500;600&family=Martian+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/theme.css">
 <script src="/static/brands.js"></script>
 <style>
   .chatwrap { max-width:820px; margin:0 auto; padding:24px 16px 132px; }
   .msg { margin:16px 0; }
   .msg.user { display:flex; }
-  .msg.user .bubble { background:var(--accent); color:#fff; border-color:var(--accent); margin-left:auto; box-shadow:none; }
-  .bubble { background:var(--surface); border:1px solid var(--line); padding:13px 16px; border-radius:14px;
+  .msg.user .bubble { background:var(--accent); color:var(--inverse-text); border-color:var(--accent); margin-left:auto; box-shadow:none; font-weight:500; }
+  .bubble { background:var(--surface); border:1px solid var(--line); padding:13px 16px; border-radius:0;
             max-width:88%; white-space:pre-wrap; line-height:1.6; box-shadow:var(--shadow); }
   .bubble.intro { background:transparent; border:none; box-shadow:none; color:var(--muted); }
   .sources { margin-top:10px; font-size:13px; }
-  .sources details { background:var(--surface-2); border:1px solid var(--line); border-radius:10px; padding:9px 13px; margin-top:6px; }
+  .sources details { background:var(--surface-2); border:1px solid var(--line); border-radius:0; padding:9px 13px; margin-top:6px; }
   .sources summary { cursor:pointer; font-weight:600; }
   .src-item { margin:9px 0; padding-bottom:9px; border-bottom:1px solid var(--line); }
   .src-item:last-child { border-bottom:none; padding-bottom:0; }
   .composer { position:fixed; bottom:0; left:0; right:0; background:var(--surface); border-top:1px solid var(--line); padding:14px 16px; }
   .composer .row { max-width:820px; margin:0 auto; display:flex; gap:8px; }
-  #brand { width:170px; flex:0 0 auto; }
-  #q { flex:1; }
+  #brand { width:170px; flex:0 1 auto; min-width:88px; }
+  #q { flex:1; min-width:0; }
+  /* on small phones give the question box more room: shrink the brand picker */
+  @media (max-width:520px){ #brand { width:120px; } .composer { padding:12px 12px; } .composer .row { gap:6px; } }
+  @media (max-width:400px){ #brand { width:104px; } #send.btn { padding:13px 12px; } }
   .cite { color:var(--accent); font-weight:600; text-decoration:none; }
   .cite:hover { text-decoration:underline; }
+  .meta { margin-top:10px; font-size:12px; color:var(--muted); display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .conf { font-weight:700; padding:2px 9px; border-radius:0; border:1px solid var(--line); }
+  .conf.High { color:var(--pos); border-color:var(--pos); }
+  .conf.Medium { color:var(--neu); border-color:var(--neu); }
+  .conf.Low { color:var(--neg); border-color:var(--neg); }
 </style>
 </head>
 <body>
@@ -38,6 +46,7 @@
   <nav class="nav">
     <a href="/start">Add brand</a>
     <a href="/dashboard">Dashboard</a>
+    <a href="/report">Report</a>
     <a href="/compare">Compare</a>
     <a href="/chat" class="active">Chat</a>
   </nav>
@@ -64,20 +73,33 @@ if (_preBrand) {
   const _intro = document.querySelector('#chat .bubble');
   if (_intro) _intro.textContent = 'Ask me what customers are saying about ' + _preBrand + '. Every answer links back to the source review.';
 }
-// Populate the brand dropdown so every question can be scoped to one brand,
-// which narrows the vector search and keeps the answer focused.
+// Populate the brand dropdown. One brand scopes the search to it; "All my brands"
+// (shown when you have 2+) lets the chat compare across them, and naming brands in
+// a question pulls those in even from a single-brand view.
 function loadBrands(){
   const pre = (_preBrand || '').trim();
   if (pre && window.RB_Brands) RB_Brands.add(pre);  // arriving with ?brand= remembers it here
   const brands = window.RB_Brands ? RB_Brands.list() : [];
-  RB_Brands.fillSelect(brandEl, { chosen: pre || brands[0] || '' });
   if (!brands.length){
-    // No brands in this browser yet: point to onboarding and keep the box closed
-    // so the chat never searches across brands the visitor has not added.
+    brandEl.innerHTML = '';
     const introEl = document.querySelector('#chat .bubble');
     if (introEl) introEl.innerHTML = 'Add a brand first, then I can tell you what its customers are saying. <a href="/start">Add a brand</a>.';
     qEl.disabled = true; sendBtn.disabled = true;
     qEl.placeholder = 'Add a brand to start chatting';
+    return;
+  }
+  const multi = brands.length > 1;
+  const chosen = pre || (multi ? '__all__' : brands[0]);
+  brandEl.innerHTML = (multi ? '<option value="__all__">All my brands</option>' : '')
+    + brands.map(b => `<option value="${esc(b)}"${b===chosen?' selected':''}>${esc(b)}</option>`).join('');
+  brandEl.value = chosen;
+  qEl.placeholder = multi ? 'Ask about a brand, or compare a few (e.g. compare X and Y)'
+                          : 'e.g. What do people complain about most?';
+  if (!pre && multi){
+    const introEl = document.querySelector('#chat .bubble');
+    if (introEl) introEl.innerHTML = 'Ask what customers are saying, about one brand or several. '
+      + 'Name brands to compare them, like "compare ' + esc(brands[0]) + ' and ' + esc(brands[1]) + '". '
+      + 'Every answer links back to the source review.';
   }
 }
 loadBrands();
@@ -101,10 +123,23 @@ function linkifyCitations(html, sources){
   });
 }
 
+// Confidence badge + evidence count, so the answer does not overclaim.
+function renderMeta(data){
+  if(!(data.sources && data.sources.length)) return '';
+  const e = data.evidence || {}; const c = data.confidence || 'Low';
+  const types = (e.source_types || []).join(', ');
+  const plural = (e.sources === 1) ? '' : 's';
+  return `<div class="meta"><span class="conf ${esc(c)}">Confidence: ${esc(c)}</span>`
+    + `<span>Based on ${e.reviews||0} reviews from ${e.sources||0} source${plural}`
+    + `${types?` (${esc(types)})`:''}</span></div>`;
+}
+
 function renderSources(sources){
   if(!sources.length) return '';
   let items = sources.map(s =>
-    `<div class="src-item">[${s.n}] <span class="pill">${esc(s.source)}</span>`
+    `<div class="src-item">[${s.n}] `
+    + (s.brand?`<span class="pill" style="color:var(--accent);border-color:var(--accent)">${esc(s.brand)}</span>`:'')
+    + `<span class="pill">${esc(s.source)}</span>`
     + (s.rating!=null?`<span class="pill">${s.rating}/5</span>`:'')
     + (s.sentiment?`<span class="pill">${esc(s.sentiment)}</span>`:'')
     + ` <a href="${esc(s.source_url)}" target="_blank" rel="noopener">open source</a>`
@@ -117,8 +152,12 @@ form.addEventListener('submit', async (e) => {
   e.preventDefault();
   const question = qEl.value.trim();
   if(!question) return;
-  const brand = brandEl.value.trim();
-  if(!brand){ return; }  // a brand is required, so the chat stays scoped to your list
+  const sel = brandEl.value;
+  const brands = window.RB_Brands ? RB_Brands.list() : [];
+  if(!brands.length){ return; }  // need at least one brand in this browser
+  // "__all__" (or empty) means compare across all your brands; the full list is
+  // always sent so naming brands in a question can pull them in.
+  const brand = (sel === '__all__' || !sel) ? null : sel;
   add('user', esc(question));
   qEl.value = '';
   sendBtn.disabled = true;
@@ -126,10 +165,10 @@ form.addEventListener('submit', async (e) => {
   try {
     const res = await fetch('/chat', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ question, brand })
+      body: JSON.stringify({ question, brand, brands })
     });
     const data = await res.json();
-    thinking.querySelector('.bubble').innerHTML = linkifyCitations(esc(data.answer), data.sources || []) + renderSources(data.sources || []);
+    thinking.querySelector('.bubble').innerHTML = linkifyCitations(esc(data.answer), data.sources || []) + renderMeta(data) + renderSources(data.sources || []);
   } catch(err) {
     thinking.querySelector('.bubble').innerHTML = '<span class="muted">Something went wrong: ' + esc(String(err)) + '</span>';
   } finally {

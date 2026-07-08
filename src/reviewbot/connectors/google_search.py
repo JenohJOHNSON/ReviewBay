@@ -1,13 +1,21 @@
 """Web-mentions connector via Apify's google-search-scraper.
 
-Surfaces brand mentions across the whole web — Reddit threads, Yelp, blogs,
-forums, news — that the per-platform connectors miss. It's the "any online
-platform" catch-all.
+Surfaces brand mentions across the whole web (Reddit threads, blogs, forums,
+news) that the per-platform connectors miss. It's the "any online platform"
+catch-all.
+
+Reddit is a special case: Reddit closed its own API to self-service in late 2025
+(the Responsible Builder Policy needs manual approval), so we do NOT hit it
+directly. Instead, Reddit is one of the most Google-indexed sites, so this web
+search already surfaces the important Reddit threads for free. Results whose URL
+is on reddit.com (or youtube.com) are TAGGED with that source, so they land in
+the Social category on the dashboard instead of the generic "web" bucket. That
+is what stops "web" from being a junk drawer.
 
 Field mapping below is VALIDATED against real actor output (run
 apify/google-search-scraper, 2026-07): each dataset item is one SERP whose
-`organicResults` array holds the individual results — a different shape from the
-review actors (one item = one review), which is exactly why this is its own
+`organicResults` array holds the individual results (a different shape from the
+review actors, where one item = one review), which is why this is its own
 connector rather than another ActorSpec.
 
 Set APIFY_TOKEN in the environment.
@@ -21,6 +29,7 @@ import os
 from collections.abc import Iterator
 
 from ..models import NormalizedReview
+from ..sources import source_from_url
 from .apify_client import ordered_tokens, run_with_fallback
 from .base import BaseConnector
 
@@ -75,7 +84,7 @@ class GoogleSearchConnector(BaseConnector):
             return None
         return NormalizedReview(
             brand=brand,
-            source="web",
+            source=source_from_url(url),
             source_url=url,
             text=text,
             # websiteTitle is the surfacing site, e.g. "Reddit · r/Coffee", "Yelp".

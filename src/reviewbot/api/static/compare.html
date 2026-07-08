@@ -6,24 +6,24 @@
 <title>ReviewBay Compare</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Funnel+Display:wght@400;500;600;700&family=Public+Sans:wght@400;500;600&family=Martian+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/theme.css">
 <script src="/static/brands.js"></script>
 <style>
-  :root { --a:#C4401E; --b:#2E6F8E; }   /* two distinct series: rust vs teal */
+  :root { --a:#CBFB5E; --b:#6EA8FF; }   /* two distinct series: chartreuse vs blue */
   .pickers { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:18px; }
   .pickers select { min-width:180px; }
   .vs { color:var(--muted); font-weight:700; }
   .verdict { display:flex; gap:14px; flex-wrap:wrap; margin-bottom:16px; }
-  .verdict .v { font-size:14px; background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:12px 15px; box-shadow:var(--shadow); }
+  .verdict .v { font-size:14px; background:var(--surface); border:1px solid var(--line); border-radius:0; padding:12px 15px; box-shadow:var(--shadow); }
   .verdict .v b { color:var(--ink); font-weight:700; }
   .cols { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
   @media (max-width:680px){ .cols { grid-template-columns:1fr; } }
   .brandname { font-size:18px; font-weight:700; margin:0 0 14px; display:flex; align-items:center; gap:9px; }
-  .swatch { width:12px; height:12px; border-radius:3px; display:inline-block; flex:0 0 auto; }
+  .swatch { width:12px; height:12px; border-radius:0; display:inline-block; flex:0 0 auto; }
   .kpis { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-bottom:16px; }
-  .kpi { background:var(--surface-2); border-radius:10px; padding:13px 8px; text-align:center; }
-  .kpi .n { font-size:24px; font-weight:800; letter-spacing:-.02em; }
+  .kpi { background:var(--surface-2); border-radius:0; padding:13px 8px; text-align:center; }
+  .kpi .n { font-family:var(--font-mono); font-size:24px; font-weight:500; letter-spacing:-.02em; }
   .kpi .l { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.03em; margin-top:4px; }
   .win { color:var(--pos)!important; }
   .lead { font-size:10px; font-weight:600; color:var(--pos); text-transform:uppercase; letter-spacing:.03em; margin-left:5px; }
@@ -37,6 +37,11 @@
   .row .bar { flex:1; height:9px; }
   .row .val { width:38px; text-align:right; color:var(--muted); font-weight:600; }
   .hint { color:var(--muted); font-size:13px; margin-top:16px; text-align:center; }
+  .insightsbox { margin-top:14px; }
+  .insightsbox ul.ins { margin:0; padding-left:18px; }
+  .insightsbox ul.ins li { margin:7px 0; font-size:14px; line-height:1.5; color:var(--ink); }
+  .insightsbox ul.ins li b { font-weight:600; }
+  .insightsbox .insnote { margin-top:12px; font-size:12px; color:var(--muted); line-height:1.5; border-top:1px solid var(--line); padding-top:9px; }
 </style>
 </head>
 <body>
@@ -85,6 +90,9 @@ function block(x, other, color){
   const winVol    = other ? x.total > other.total : false;
   const winPos    = other ? posPct(x) > posPct(other) : false;
   const winRating = other && x.avg_rating != null && (other.avg_rating == null || x.avg_rating > other.avg_rating);
+  const hs = (x.health && x.health.score != null) ? x.health.score : null;
+  const ohs = (other && other.health && other.health.score != null) ? other.health.score : null;
+  const winHealth = other && hs != null && (ohs == null || hs > ohs);
   const lead = '<span class="lead">leads</span>';
   const maxSrc = Math.max(...x.by_source.map(y=>y.count), 1);
   const src = x.by_source.map(y =>
@@ -94,6 +102,7 @@ function block(x, other, color){
   return `<div class="card">
     <div class="brandname"><span class="swatch" style="background:${color}"></span>${esc(x.brand)}</div>
     <div class="kpis">
+      <div class="kpi"><div class="n ${winHealth?'win':''}">${hs!=null?hs:'n/a'}${winHealth?lead:''}</div><div class="l">Health</div></div>
       <div class="kpi"><div class="n ${winVol?'win':''}">${x.total}${winVol?lead:''}</div><div class="l">Reviews</div></div>
       <div class="kpi"><div class="n ${winRating?'win':''}">${x.avg_rating!=null?x.avg_rating:'n/a'}${winRating?lead:''}</div><div class="l">Avg rating</div></div>
       <div class="kpi"><div class="n" style="color:var(--pos)">${pp}%${winPos?lead:''}</div><div class="l">Positive</div></div>
@@ -114,12 +123,41 @@ function block(x, other, color){
 function verdict(a, b){
   if(!a || !b || !a.total || !b.total) return '';
   const parts = [];
+  if(a.health && b.health && a.health.score!=null && b.health.score!=null && a.health.score!==b.health.score){ const w=a.health.score>b.health.score?a:b; parts.push(`<div class="v"><b>${esc(w.brand)}</b> has the healthier reputation, ${Math.max(a.health.score,b.health.score)} vs ${Math.min(a.health.score,b.health.score)}</div>`); }
   const ap = posPct(a), bp = posPct(b);
   if(ap !== bp){ const w = ap>bp?a:b; parts.push(`<div class="v"><b>${esc(w.brand)}</b> is more loved, ${Math.max(ap,bp)}% vs ${Math.min(ap,bp)}% positive</div>`); }
   else parts.push(`<div class="v">Tied on positivity, ${ap}% each</div>`);
   if(a.avg_rating!=null && b.avg_rating!=null && a.avg_rating!==b.avg_rating){ const w = a.avg_rating>b.avg_rating?a:b; parts.push(`<div class="v"><b>${esc(w.brand)}</b> rates higher, ${Math.max(a.avg_rating,b.avg_rating)} vs ${Math.min(a.avg_rating,b.avg_rating)}</div>`); }
   if(a.total !== b.total){ const w = a.total>b.total?a:b; parts.push(`<div class="v"><b>${esc(w.brand)}</b> is talked about more, ${Math.max(a.total,b.total)} vs ${Math.min(a.total,b.total)} reviews</div>`); }
   return `<div class="verdict">${parts.join('')}</div>`;
+}
+
+// A short, deterministic read on the two brands (no LLM): who leads overall, and
+// where each is strong or exposed, drawn straight from the compared figures.
+function negPct(x){ return Math.round(100 * x.sentiment.negative / total(x)); }
+function insightsBox(a, b){
+  if(!a || !b || !a.total || !b.total) return '';
+  const items = [];
+  const ha = (a.health && a.health.score!=null) ? a.health.score : null;
+  const hb = (b.health && b.health.score!=null) ? b.health.score : null;
+  if(ha!=null && hb!=null){
+    if(ha!==hb){ const w = ha>hb?a:b; items.push(`<b>${esc(w.brand)}</b> has the stronger overall reputation, a ${Math.abs(ha-hb)}-point health gap (${Math.max(ha,hb)} vs ${Math.min(ha,hb)}).`); }
+    else items.push(`Both brands are level on overall health (${ha}).`);
+  }
+  const ap = posPct(a), bp = posPct(b);
+  if(ap!==bp){ const w = ap>bp?a:b; items.push(`<b>${esc(w.brand)}</b> is better liked: ${Math.max(ap,bp)}% positive vs ${Math.min(ap,bp)}%.`); }
+  if(a.avg_rating!=null && b.avg_rating!=null && a.avg_rating!==b.avg_rating){ const w = a.avg_rating>b.avg_rating?a:b; items.push(`<b>${esc(w.brand)}</b> rates higher on stars (${Math.max(a.avg_rating,b.avg_rating)} vs ${Math.min(a.avg_rating,b.avg_rating)}).`); }
+  if(a.total!==b.total){ const w = a.total>b.total?a:b; items.push(`<b>${esc(w.brand)}</b> gets more coverage (${Math.max(a.total,b.total)} vs ${Math.min(a.total,b.total)} reviews collected).`); }
+  const top = x => (x.by_source && x.by_source.length) ? x.by_source[0].source : null;
+  const ta = top(a), tb = top(b);
+  if(ta && tb){ items.push(ta===tb
+    ? `Both are discussed most on <b>${esc(ta)}</b>.`
+    : `<b>${esc(a.brand)}</b> shows up most on <b>${esc(ta)}</b>, <b>${esc(b.brand)}</b> on <b>${esc(tb)}</b>.`); }
+  const na = negPct(a), nb = negPct(b), hi = Math.max(na, nb);
+  if(hi>=35){ const w = na>nb?a:b; items.push(`Watch <b>${esc(w.brand)}</b>: ${hi}% of its reviews are negative.`); }
+  if(!items.length) return '';
+  return `<div class="card insightsbox"><h3>Insights</h3><ul class="ins">${items.map(t=>`<li>${t}</li>`).join('')}</ul>
+    <div class="insnote">Based on the reviews collected for each brand. We use recent, relevant samples, so figures are directional rather than exhaustive.</div></div>`;
 }
 
 function myBrands(){ return window.RB_Brands ? RB_Brands.list() : []; }
@@ -141,7 +179,8 @@ async function load(){
   catch(e){ content.innerHTML = '<div class="empty">Could not load: ' + esc(String(e)) + '</div>'; return; }
 
   let html = verdict(d.a, d.b)
-    + `<div class="cols">${block(d.a, d.b, 'var(--a)')}${block(d.b, d.a, 'var(--b)')}</div>`;
+    + `<div class="cols">${block(d.a, d.b, 'var(--a)')}${block(d.b, d.a, 'var(--b)')}</div>`
+    + insightsBox(d.a, d.b);
   if(brands.length < 2)
     html += `<div class="hint">Only one brand in your list so far. Add a competitor from the Add brand page to see a real head to head.</div>`;
   content.innerHTML = html;

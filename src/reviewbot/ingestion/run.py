@@ -24,10 +24,17 @@ from ..connectors import (
     YELP,
     ApifyConnector,
     AppStoreConnector,
+    FirecrawlConnector,
     GooglePlayConnector,
     GoogleSearchConnector,
+    HackerNewsConnector,
+    MastodonConnector,
+    RedditApiConnector,
+    RedditJsonConnector,
+    TavilyConnector,
+    TrustpilotConnector,
 )
-from . import postgres_loader
+from . import loader
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -43,10 +50,11 @@ DYNAMIC_CONFIG = os.environ.get(
 )
 
 # Which connectors to instantiate, gated by the env vars they need so a missing
-# credential disables that source instead of crashing the whole run. Reddit,
-# Google Maps, Yelp, and TripAdvisor all run through Apify (one APIFY_TOKEN).
+# credential disables that source instead of crashing the whole run. Google Maps,
+# Yelp, TripAdvisor, Instagram, and Facebook run through Apify (one APIFY_TOKEN).
+# Reddit is handled specially below: it prefers the FREE official Reddit API and
+# only falls back to the Apify actor when no Reddit app is configured.
 _APIFY_SPECS = {
-    "reddit": REDDIT,
     "google_maps": GOOGLE_MAPS,
     "yelp": YELP,
     "tripadvisor": TRIPADVISOR,
@@ -60,11 +68,41 @@ def build_connectors(enabled: list[str]) -> list:
     for name in enabled:
         try:
             if name == "web":
-                connectors.append(GoogleSearchConnector())
+                # Prefer Tavily (cheaper) for web search; fall back to the Apify
+                # google-search actor when no Tavily key is set.
+                try:
+                    connectors.append(TavilyConnector())
+                except KeyError:
+                    connectors.append(GoogleSearchConnector())
+            elif name == "firecrawl":
+                # Opt-in deep search. No key -> skipped (KeyError caught below).
+                connectors.append(FirecrawlConnector())
+            elif name == "trustpilot":
+                # Opt-in self-hosted Playwright + Selectolax scraper. Yields
+                # nothing (and logs) if the browser is not installed.
+                connectors.append(TrustpilotConnector())
             elif name == "app_store":
                 connectors.append(AppStoreConnector())
             elif name == "google_play":
                 connectors.append(GooglePlayConnector())
+            elif name == "reddit":
+                # Free and keyless via the public search JSON (works from
+                # residential IPs; blocked on cloud, where web search covers
+                # reddit.com instead). Set REDDIT_USE_API=1 to prefer the official
+                # API connector; Apify stays the last resort.
+                if os.environ.get("REDDIT_USE_API") == "1":
+                    try:
+                        connectors.append(RedditApiConnector())
+                    except KeyError:
+                        connectors.append(RedditJsonConnector())
+                else:
+                    connectors.append(RedditJsonConnector())
+            elif name == "mastodon":
+                # Open, federated, keyless (public hashtag timelines).
+                connectors.append(MastodonConnector())
+            elif name == "hackernews":
+                # Free Algolia HN Search, keyless. Strong for B2B/tech brands.
+                connectors.append(HackerNewsConnector())
             elif name in _APIFY_SPECS:
                 connectors.append(ApifyConnector(_APIFY_SPECS[name]))
             else:
@@ -118,13 +156,13 @@ def run_source(source_name: str, config: dict | None = None) -> int:
         keywords = brand_cfg.get("keywords", [brand])
         limit = int(brand_cfg.get("limit", default_limit))
         reviews = list(connector.fetch(brand, keywords, limit, website=brand_cfg.get("website")))
-        total += postgres_loader.load(reviews)
+        total += loader.load(reviews)
     log.info("source=%s upserted %d reviews", source_name, total)
     return total
 
 
 def run_brand(brand_cfg: dict, on_progress=None) -> int:
-    """Scrape ONE brand across its enabled sources into raw. Returns rows written.
+    """Scrape ONE brand across its enabled sources into RAW. Returns rows written.
 
     The onboarding flow calls this to collect a just-added brand immediately. The
     optional on_progress(source_name, written, running_total) callback lets the
@@ -136,13 +174,18 @@ def run_brand(brand_cfg: dict, on_progress=None) -> int:
     enabled = brand_cfg.get("sources") or []
     limit = int(brand_cfg.get("limit", default_limit))
     total = 0
+    failures = 0
+    from .. import runs
+
+    started = runs.now()
     for connector in build_connectors(enabled):
         try:
             reviews = list(connector.fetch(brand, keywords, limit, website=brand_cfg.get("website")))
-            written = postgres_loader.load(reviews)
+            written = loader.load(reviews)
         except Exception:  # noqa: BLE001
             log.exception("brand=%s source=%s failed — skipping", brand, connector.source_name)
             written = 0
+            failures += 1
         total += written
         if on_progress:
             try:
@@ -150,6 +193,8 @@ def run_brand(brand_cfg: dict, on_progress=None) -> int:
             except Exception:  # noqa: BLE001
                 log.exception("on_progress callback failed")
     log.info("run_brand: brand=%s upserted %d reviews", brand, total)
+    status = "error" if failures else ("ok" if total else "empty")
+    runs.record_run(brand, enabled, total, status, started, runs.now())
     return total
 
 
@@ -165,7 +210,7 @@ def run_once(config: dict) -> int:
         for connector in build_connectors(enabled):
             log.info("fetching brand=%s source=%s", brand, connector.source_name)
             reviews = list(connector.fetch(brand, keywords, limit, website=brand_cfg.get("website")))
-            written = postgres_loader.load(reviews)
+            written = loader.load(reviews)
             total += written
     return total
 
@@ -185,6 +230,10 @@ def main() -> None:
             from ..enrich.run import enrich
 
             enrich()
+            # LLM QC pass: relevance + sentiment check on the freshly enriched rows.
+            from .. import qc as _qc
+
+            _qc.qc()
         except Exception:  # noqa: BLE001
             log.exception("ingestion pass failed; will retry next interval")
 

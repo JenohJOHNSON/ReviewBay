@@ -17,6 +17,13 @@ from .apify_source import (
 from .google_search import GoogleSearchConnector
 from .app_store import AppStoreConnector
 from .google_play import GooglePlayConnector
+from .reddit_api import RedditApiConnector
+from .reddit_json import RedditJsonConnector
+from .hackernews import HackerNewsConnector
+from .mastodon_source import MastodonConnector
+from .tavily_source import TavilyConnector
+from .firecrawl_source import FirecrawlConnector
+from .playwright_source import TrustpilotConnector
 
 __all__ = [
     "BaseConnector",
@@ -24,6 +31,13 @@ __all__ = [
     "GoogleSearchConnector",
     "AppStoreConnector",
     "GooglePlayConnector",
+    "RedditApiConnector",
+    "RedditJsonConnector",
+    "HackerNewsConnector",
+    "MastodonConnector",
+    "TavilyConnector",
+    "FirecrawlConnector",
+    "TrustpilotConnector",
     "REDDIT",
     "GOOGLE_MAPS",
     "YELP",

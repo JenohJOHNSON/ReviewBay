@@ -6,6 +6,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# No local embedding model: embeddings are computed via the OpenAI API (see
+# embeddings.py), so there is nothing heavy to bake and no ~1GB model to load at
+# runtime. This keeps the image small and the container's memory footprint low.
+
 COPY src/ ./src/
 COPY config/ ./config/
 ENV PYTHONPATH=/app/src

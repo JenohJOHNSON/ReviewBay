@@ -1,19 +1,21 @@
 # Shared dependencies for both the ingestion worker and the API.
 # Pinned loosely; tighten before production.
 
-# --- ingestion / storage ---
-apify-client>=1.7            # Reddit / Google Maps / Yelp / TripAdvisor / web actors
+# --- ingestion ---
+apify-client>=1.7            # Google Maps / Yelp / TripAdvisor / IG / FB / web actors
 google-play-scraper>=1.2     # Google Play reviews (free, no key/token)
-requests>=2.31              # App Store (Apple RSS feed) + Google Play HTML fallback
-psycopg[binary]>=3.2         # Neon/Postgres driver
+requests>=2.31              # App Store (Apple RSS), Tavily, Firecrawl, Reddit API
+psycopg[binary]>=3.2        # Postgres (Neon) driver
 PyYAML>=6.0
+playwright>=1.44            # self-hosted Trustpilot scraper (ingestion image also runs `playwright install chromium`)
+selectolax>=0.3            # fast HTML parser for the Playwright-rendered pages
 
-# --- embeddings + sentiment (local, free) ---
-fastembed>=0.3             # local text->vector model (no GPU, no API)
-vaderSentiment>=3.3        # local sentiment scoring
+# --- sentiment + insights (local, free) ---
+vaderSentiment>=3.3        # local sentiment scoring (tiny lexicon, no model to load)
+scikit-learn>=1.4          # TF-IDF + KMeans for the dashboard insights (no LLM)
 
-# --- api / rag ---
+# --- api / rag / embeddings ---
 fastapi>=0.115
 uvicorn[standard]>=0.30
 pydantic>=2.7
-anthropic>=0.40             # Claude — RAG generation with citations
+openai>=2.0                 # OpenAI Responses API (chat) + embeddings API (vectors)

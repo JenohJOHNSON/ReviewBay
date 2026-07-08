@@ -1,96 +1,49 @@
-"""LLM-generated dashboard insights.
+"""Local, deterministic dashboard insights (no LLM).
 
-Claude reads a sample of a brand's reviews and returns a compact, structured
-report: an executive summary, the pros/cons that drive sentiment, the top themes,
-and a consumer-behavior note. Results are cached per brand (TTL) so the dashboard
-stays snappy and we don't pay for a generation on every page load.
+From a sample of a brand's reviews we build the same structured report the UI
+already expects (executive summary, pros/cons, top themes, consumer-behavior
+note) using classic ML: sentiment aggregation, TF-IDF keyphrases, and KMeans
+clustering for themes. This is free, offline, and reproducible, so the dashboard
+never depends on an LLM or spends tokens. Results are cached per brand (TTL) so
+the page stays snappy. The `/api/insights` JSON shape is unchanged.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
 import threading
 import time
 
-from .. import db
-
 log = logging.getLogger(__name__)
 
-CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5")
-INSIGHTS_TTL = int(os.environ.get("INSIGHTS_TTL", "900"))       # cache 15 min
-INSIGHTS_SAMPLE = int(os.environ.get("INSIGHTS_SAMPLE", "60"))  # reviews per call
+# Generic filler words that add no topical signal, folded into the stop-word set
+# alongside the brand's own name (see _stopwords). Without this, a coffee brand's
+# top "theme" is just its own name (e.g. "Blue bottle"), which reads as noise.
+_GENERIC_STOP = frozenset({
+    # filler
+    "just", "like", "really", "ve", "don", "didn", "doesn", "got", "get",
+    "also", "would", "could", "one", "even", "much", "way", "thing", "im",
+    # pure sentiment / meta words: they signal HOW people feel, not WHAT about,
+    # so they make lousy topic/theme labels ("Great" is not a theme).
+    "best", "great", "good", "bad", "worst", "nice", "love", "loved", "amazing",
+    "awesome", "terrible", "horrible", "excellent", "review", "reviews",
+})
 
-_WHERE = "((%(brand)s)::text IS NULL OR brand ILIKE (%(brand)s)::text)"
+INSIGHTS_TTL = int(os.environ.get("INSIGHTS_TTL", "900"))       # cache 15 min
+INSIGHTS_SAMPLE = int(os.environ.get("INSIGHTS_SAMPLE", "60"))  # reviews per report
+
+# ::text so Postgres can infer the parameter type in the `IS NULL` branch.
+_WHERE = "(%(brand)s::text IS NULL OR brand ILIKE %(brand)s::text)"
 _CACHE: dict[str, tuple[float, dict]] = {}
 _LOCK = threading.Lock()
 
-_SYSTEM = """You are a brand-reputation analyst. From the customer reviews given, \
-produce a compact JSON report. Ground EVERYTHING only in the reviews provided, \
-never invent facts or use outside knowledge. In any text you write, never use an \
-em dash; use commas, periods, or parentheses instead.
-
-Return ONLY valid JSON (no markdown, no prose) with EXACTLY this shape:
-{
-  "summary": "2-3 sentence executive overview of what customers think overall",
-  "pros": ["short phrase", "..."],            // up to 5, most common praises
-  "cons": ["short phrase", "..."],            // up to 5, most common complaints
-  "themes": [                                  // up to 6 recurring topics
-    {"name": "short topic label", "sentiment": "positive|neutral|negative", "mentions": 0,
-     "description": "1-2 sentences on what customers say about this theme"}
-  ],
-  "behavior": "1-2 sentences on consumer-behavior patterns, what drives love vs frustration"
-}
-Set "mentions" to how many of the provided reviews touch that theme (your best estimate)."""
-
-
-# Tool schema: forcing the model to call this guarantees valid, shape-checked JSON,
-# so a messy brand can never produce an unparseable summary.
-_REPORT_TOOL = {
-    "name": "report",
-    "description": "Return the brand-reputation report built only from the reviews.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "summary": {"type": "string", "description": "2-3 sentence executive overview"},
-            "pros": {"type": "array", "items": {"type": "string"}, "description": "up to 5 common praises"},
-            "cons": {"type": "array", "items": {"type": "string"}, "description": "up to 5 common complaints"},
-            "themes": {
-                "type": "array",
-                "description": "up to 6 recurring topics",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "name": {"type": "string", "description": "short topic label"},
-                        "sentiment": {"type": "string", "enum": ["positive", "neutral", "negative"]},
-                        "mentions": {"type": "integer"},
-                        "description": {
-                            "type": "string",
-                            "description": "one or two sentences on what customers say about this theme, grounded only in the reviews",
-                        },
-                    },
-                    "required": ["name", "sentiment", "description"],
-                },
-            },
-            "behavior": {"type": "string", "description": "1-2 sentences on consumer-behavior patterns"},
-        },
-        "required": ["summary", "pros", "cons", "themes", "behavior"],
-    },
-}
-
 
 def _connect():
-    return db.connect()
+    from ..db import connect
 
-
-def _cols(cur) -> list[str]:
-    cols = []
-    for c in cur.description:
-        name = getattr(c, "name", None)
-        cols.append((name if name is not None else c[0]).lower())
-    return cols
+    return connect()
 
 
 def _sample_reviews(brand: str | None) -> list[dict]:
@@ -107,62 +60,150 @@ def _sample_reviews(brand: str | None) -> list[dict]:
                 """,
                 {"brand": brand, "n": INSIGHTS_SAMPLE},
             )
-            cols = _cols(cur)
+            cols = [c[0].lower() for c in cur.description]
             return [dict(zip(cols, r)) for r in cur.fetchall()]
     finally:
         conn.close()
 
 
-def _parse_json(text: str) -> dict:
-    text = text.strip()
-    if text.startswith("```"):  # strip an accidental code fence
-        text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
-        text = re.sub(r"\n?```$", "", text).strip()
-    a, b = text.find("{"), text.rfind("}")
-    if a != -1 and b != -1:
-        text = text[a : b + 1]
-    return json.loads(text)
+# --- small text helpers (deterministic) --------------------------------------
 
+def _brand_tokens(brand: str | None) -> set[str]:
+    """The brand's own words, so they don't show up as 'themes'. 'Blue Bottle
+    Coffee' -> {blue, bottle, coffee}. These are in nearly every review, so they
+    carry no topical signal and only crowd out the real topics."""
+    return set(re.findall(r"[a-z0-9]+", (brand or "").lower()))
+
+
+def _stopwords(brand: str | None) -> list[str]:
+    from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS  # type: ignore
+
+    return list(ENGLISH_STOP_WORDS | _GENERIC_STOP | _brand_tokens(brand))
+
+
+def _titleize(term: str) -> str:
+    return (term[:1].upper() + term[1:]) if term else term
+
+
+def _join(items: list[str]) -> str:
+    items = [i for i in items if i]
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} and {items[1]}"
+    return ", ".join(items[:-1]) + f", and {items[-1]}"
+
+
+def _behavior(pos: int, neg: int, pros: list[str], cons: list[str]) -> str:
+    if pos > neg * 2:
+        base = "Customers are largely loyal, with praise clearly outweighing complaints."
+    elif neg > pos:
+        base = "Frustration outweighs praise, so retention is the thing to watch."
+    else:
+        base = "Opinions are mixed, with praise and complaints fairly balanced."
+    if pros and cons:
+        return f"{base} Love tends to come from {pros[0].lower()}, while frustration centers on {cons[0].lower()}."
+    return base
+
+
+# --- the ML report ------------------------------------------------------------
 
 def _generate(brand: str | None, rows: list[dict]) -> dict:
-    import anthropic  # type: ignore
+    """Build the report with TF-IDF keyphrases + KMeans themes + sentiment stats.
 
-    context = "\n".join(
-        f"- ({r.get('source')}, {r.get('sentiment')}, rating {r.get('rating')}) "
-        f"{(r.get('text') or '').strip()[:300]}"
-        for r in rows
+    Fully deterministic (fixed random_state, no sampling), so the same reviews
+    always yield the same report. Degrades gracefully on tiny or low-signal
+    corpora (fewer or no themes) rather than erroring.
+    """
+    import numpy as np  # type: ignore
+    from sklearn.cluster import KMeans  # type: ignore
+    from sklearn.feature_extraction.text import TfidfVectorizer  # type: ignore
+
+    pairs = [((r.get("text") or "").strip(), r.get("sentiment"), r.get("rating")) for r in rows]
+    pairs = [(t, s, rt) for (t, s, rt) in pairs if t]
+    texts = [t for (t, _, _) in pairs]
+    sent = [s for (_, s, _) in pairs]
+    ratings = [rt for (_, _, rt) in pairs if rt is not None]
+    n = len(texts)
+    pos, neg, neu = sent.count("positive"), sent.count("negative"), sent.count("neutral")
+    avg = round(sum(ratings) / len(ratings), 2) if ratings else None
+    label = brand or "these brands"
+
+    # TF-IDF over the corpus (unigrams + bigrams). min_df tames noise but must not
+    # exceed the corpus size.
+    vec = TfidfVectorizer(
+        stop_words=_stopwords(brand), ngram_range=(1, 2),
+        min_df=2 if n >= 6 else 1, max_features=500, sublinear_tf=True,
     )
-    client = anthropic.Anthropic()
-    resp = client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=1300,
-        system=_SYSTEM,
-        tools=[_REPORT_TOOL],
-        tool_choice={"type": "tool", "name": "report"},
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    f"Brand: {brand or 'all tracked brands'}\n"
-                    f"Here are {len(rows)} recent customer reviews:\n\n{context}\n\n"
-                    "Analyze them and call the report tool."
+    try:
+        X = vec.fit_transform(texts)
+        terms = vec.get_feature_names_out()
+    except ValueError:  # empty vocabulary (all stop-words / too little text)
+        X, terms = None, []
+
+    def top_terms(indices: list[int], m: int) -> list[str]:
+        if X is None or not indices or len(terms) == 0:
+            return []
+        centroid = np.asarray(X[indices].mean(axis=0)).ravel()
+        out: list[str] = []
+        for j in centroid.argsort()[::-1]:
+            if centroid[j] <= 0:
+                break
+            out.append(terms[j])
+            if len(out) >= m:
+                break
+        return out
+
+    # Themes: cluster the TF-IDF vectors, label each cluster by its top terms.
+    themes: list[dict] = []
+    if X is not None and X.shape[1] >= 2 and n >= 4:
+        k = max(2, min(6, n // 12 or 2, X.shape[1]))
+        labels = KMeans(n_clusters=k, n_init=10, random_state=0).fit_predict(X)
+        for c in range(k):
+            idx = [i for i in range(n) if labels[i] == c]
+            top = top_terms(idx, 3)
+            if not idx or not top:
+                continue
+            cs = [sent[i] for i in idx]
+            csent = max(("positive", "neutral", "negative"), key=cs.count)
+            themes.append({
+                "name": _titleize(top[0]),
+                "sentiment": csent,
+                "mentions": len(idx),
+                "description": (
+                    f"Around {len(idx)} reviews cluster here, most often mentioning "
+                    f"{_join(top)}. The tone is mostly {csent}."
                 ),
-            }
-        ],
-    )
-    # tool_choice forces the tool call, so its input is already valid, schema-checked
-    # JSON. No text parsing, so a syntax error is impossible.
-    data = next((b.input for b in resp.content if b.type == "tool_use"), None)
-    if not isinstance(data, dict):
-        raise ValueError("insights: model did not return the report tool")
-    data = dict(data)
-    # normalise shape defensively
-    data.setdefault("summary", "")
-    for key in ("pros", "cons", "themes"):
-        if not isinstance(data.get(key), list):
-            data[key] = []
-    data.setdefault("behavior", "")
-    return data
+            })
+        themes.sort(key=lambda t: -t["mentions"])
+        themes = themes[:6]
+
+    # Pros / cons: the most distinctive terms among positive vs negative reviews.
+    pros = [_titleize(t) for t in top_terms([i for i in range(n) if sent[i] == "positive"], 5)]
+    cons = [_titleize(t) for t in top_terms([i for i in range(n) if sent[i] == "negative"], 5)]
+
+    def pct(x: int) -> int:
+        return round(100 * x / n) if n else 0
+
+    lead = themes[0]["name"].lower() if themes else (pros[0].lower() if pros else "their overall experience")
+    rating_txt = f", averaging {avg} out of 5 stars" if avg is not None else ""
+    summary = (
+        f"Across {n} recent reviews of {label}, sentiment runs {pct(pos)}% positive, "
+        f"{pct(neu)}% neutral, and {pct(neg)}% negative{rating_txt}. "
+        f"The most common topic is {lead}. "
+        + (f"The strongest praise is around {_join(pros[:3]).lower()}. " if pros else "")
+        + (f"The main frustrations center on {_join(cons[:3]).lower()}." if cons else "")
+    ).strip()
+
+    return {
+        "summary": summary,
+        "pros": pros,
+        "cons": cons,
+        "themes": themes,
+        "behavior": _behavior(pos, neg, pros, cons),
+    }
 
 
 def get_insights(brand: str | None = None, refresh: bool = False) -> dict:
@@ -186,7 +227,7 @@ def get_insights(brand: str | None = None, refresh: bool = False) -> dict:
         except Exception:  # noqa: BLE001
             log.exception("insights generation failed for brand=%s", brand)
             data = {
-                "summary": "Could not generate the AI summary right now.",
+                "summary": "Could not build the review summary right now.",
                 "pros": [], "cons": [], "themes": [], "behavior": "",
                 "reviews_analyzed": len(rows), "error": True,
             }
