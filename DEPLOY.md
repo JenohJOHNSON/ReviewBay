@@ -223,15 +223,27 @@ and the previous version keeps serving.
 
 ### Moving existing data in (done once)
 
-`railway.dbsetup.json` describes a one-off job: it migrates the new database,
-then runs `scripts/copy_database.py` to copy every ReviewBay table from the old
-one. Create a temporary service from this repository with that config file and
-two variables, both references, so again no password is typed anywhere:
+`scripts/copy_database.py` copies every ReviewBay table from the old database
+into the new one. It ran as a temporary Railway service built from this
+repository, with two variables that are both references, so no password was
+typed anywhere:
 
 ```
 DATABASE_URL=${{pgvector.DATABASE_URL_PRIVATE}}     # copy into
 SOURCE_DATABASE_URL=${{ReviewBay.DATABASE_URL}}      # copy from (the old database)
 ```
+
+and this start command:
+
+```
+sh -c "python scripts/migrate.py && python scripts/copy_database.py; exec uvicorn reviewbot.api.main:app --host 0.0.0.0 --port ${PORT:-8000}"
+```
+
+The repository's `railway.json` applies to that service too, and it has a
+`/healthz` health check, which is why the command finishes by starting the app:
+the deploy then completes cleanly and the copy's summary stays in its logs.
+(Railway no longer lets a service point at a different config file; config files
+are deprecated in favour of its newer infrastructure-as-code format.)
 
 The copy never writes to the source and never overwrites a row in the target,
 so running it again only fills in rows written to the old database during the

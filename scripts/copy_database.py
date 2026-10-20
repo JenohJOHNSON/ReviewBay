@@ -9,8 +9,8 @@ neither password passes through a laptop, a shell history or a chat:
 
     python scripts/migrate.py && python scripts/copy_database.py
 
-(railway.dbsetup.json runs exactly that as a one-off job.) It works from a laptop
-too, with both variables set.
+DEPLOY.md shows the temporary Railway service that runs it. It works from a
+laptop too, with both variables set.
 
 What it does and does not do:
 
