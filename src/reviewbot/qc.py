@@ -168,6 +168,18 @@ def qc(brand: str | None = None, limit: int = _MAX_ROWS) -> dict:
     if not rows:
         return {"checked": 0, "irrelevant": 0}
 
+    # Without a key every batch would fail individually and log a traceback, so a
+    # key-less deployment running this on a 15-minute loop would write ~24
+    # tracebacks an hour for a condition that is configuration, not an error. The
+    # trusted-source pass above has already done its (free) work by this point.
+    if not os.environ.get("OPENAI_API_KEY"):
+        log.info(
+            "qc: OPENAI_API_KEY is not set, skipping the relevance pass for %d row(s). "
+            "They keep relevant = NULL, so they still show on the dashboard.",
+            len(rows),
+        )
+        return {"checked": 0, "irrelevant": 0, "skipped": len(rows), "reason": "no_api_key"}
+
     # Group by brand BEFORE batching. A batch asks one question about one brand,
     # so a batch must never span brands.
     per_brand: dict[str, list[tuple]] = defaultdict(list)

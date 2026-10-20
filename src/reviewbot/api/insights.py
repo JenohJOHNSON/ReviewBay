@@ -14,9 +14,9 @@ import logging
 import os
 import re
 import threading
-import time
 
 from .. import db
+from . import cache
 
 log = logging.getLogger(__name__)
 
@@ -42,8 +42,10 @@ INSIGHTS_SAMPLE = int(os.environ.get("INSIGHTS_SAMPLE", "60"))  # reviews per re
 # the headline numbers but still shaped the themes, pros and cons on the very
 # same page.
 _WHERE = "(%(brand)s::text IS NULL OR brand ILIKE %(brand)s::text) AND relevant IS NOT FALSE"
-_CACHE: dict[str, tuple[float, dict]] = {}
-_LOCK = threading.Lock()
+# Bounded and self-evicting: see api/cache.py for why a plain dict keyed by a
+# request parameter was a slow leak.
+_CACHE = cache.TTLCache(INSIGHTS_TTL, name="insights")
+_LOCK = threading.Lock()  # still guards _generate, which must not run twice
 
 
 def _connect():
@@ -222,11 +224,10 @@ def _generate(brand: str | None | list[dict], rows: list[dict] | None = None) ->
 
 def get_insights(brand: str | None = None, refresh: bool = False) -> dict:
     key = (brand or "").strip().lower()
-    now = time.time()
-    with _LOCK:
+    if not refresh:
         hit = _CACHE.get(key)
-        if hit and not refresh and now - hit[0] < INSIGHTS_TTL:
-            return hit[1]
+        if hit is not None:
+            return hit
 
     data = None
     try:
@@ -255,6 +256,5 @@ def get_insights(brand: str | None = None, refresh: bool = False) -> dict:
                 "reviews_analyzed": len(rows), "error": True,
             }
 
-    with _LOCK:
-        _CACHE[key] = (time.time(), data)
+    _CACHE.put(key, data)
     return data

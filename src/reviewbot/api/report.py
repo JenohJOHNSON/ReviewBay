@@ -19,10 +19,9 @@ import os
 import re
 import secrets
 import threading
-import time
 
 from .. import prompting
-from . import insights, stats
+from . import cache, insights, stats
 from .rag import OPENAI_MODEL, OPENAI_REASONING_EFFORT, _is_reasoning_model
 
 log = logging.getLogger(__name__)
@@ -33,8 +32,9 @@ REPORT_SAMPLE = int(os.environ.get("REPORT_SAMPLE", "24"))     # reviews cited i
 # Matches the dashboard predicate in stats.py. Without `relevant IS NOT FALSE`
 # the report cited reviews the QC pass had already judged off-topic as evidence.
 _WHERE = "(%(brand)s::text IS NULL OR brand ILIKE %(brand)s::text) AND relevant IS NOT FALSE"
-_CACHE: dict[str, tuple[float, dict]] = {}
-_LOCK = threading.Lock()
+# Bounded and self-evicting: see api/cache.py.
+_CACHE = cache.TTLCache(REPORT_TTL, name="report")
+_LOCK = threading.Lock()  # still guards _synthesize
 
 # The interpretive sections the LLM fills in, and their empty default.
 _SECTIONS = (
@@ -193,18 +193,16 @@ def _first_brace(text: str) -> str | None:
 
 def get_report(brand: str | None = None, refresh: bool = False) -> dict:
     key = (brand or "").strip().lower()
-    now = time.time()
-    with _LOCK:
+    if not refresh:
         hit = _CACHE.get(key)
-        if hit and not refresh and now - hit[0] < REPORT_TTL:
-            return hit[1]
+        if hit is not None:
+            return hit
 
     st = stats.get_stats(brand)
     if not st.get("total"):
         data = {"brand": brand, "empty": True,
                 "message": "No reviews yet for this brand. Collection runs in the background."}
-        with _LOCK:
-            _CACHE[key] = (time.time(), data)
+        _CACHE.put(key, data)
         return data
 
     ins = insights.get_insights(brand)
@@ -242,8 +240,7 @@ def get_report(brand: str | None = None, refresh: bool = False) -> dict:
         for i, r in enumerate(sample, start=1)
     ]
 
-    with _LOCK:
-        _CACHE[key] = (time.time(), data)
+    _CACHE.put(key, data)
     return data
 
 
