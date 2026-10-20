@@ -1,0 +1,11 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "docker/worker.Dockerfile"
+  },
+  "deploy": {
+    "startCommand": "sh -c \"python scripts/migrate.py && python scripts/copy_database.py\"",
+    "restartPolicyType": "NEVER"
+  }
+}
