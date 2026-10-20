@@ -316,6 +316,33 @@ def _call(attempt: _Attempt, *, system: str, user: str, json_mode: bool,
 # --- failure handling -------------------------------------------------------------
 
 
+# How a provider says "this account cannot pay". OpenAI sends it as a 429, the
+# same status as a rate limit, which is why it has to be recognised: retrying it
+# changes nothing. Production returned code "credit_balance_exhausted" with type
+# "insufficient_quota"; older responses put "insufficient_quota" in the code.
+# Matching only the code missed the newer form and treated an empty account as a
+# brief rate limit.
+_OUT_OF_CREDIT_CODES = frozenset({
+    "insufficient_quota", "credit_balance_exhausted",
+    "billing_hard_limit_reached", "billing_not_active",
+})
+_OUT_OF_CREDIT_PHRASES = (
+    "insufficient_quota", "exceeded your current quota", "no credits remaining",
+    "credit balance", "billing hard limit",
+)
+
+
+def is_out_of_credit(exc: BaseException) -> bool:
+    code = str(getattr(exc, "code", "") or "").lower()
+    kind = str(getattr(exc, "type", "") or "").lower()
+    message = (str(getattr(exc, "message", "") or "") + " " + str(exc)).lower()
+    return (
+        code in _OUT_OF_CREDIT_CODES
+        or kind in _OUT_OF_CREDIT_CODES
+        or any(phrase in message for phrase in _OUT_OF_CREDIT_PHRASES)
+    )
+
+
 def classify(exc: BaseException, provider: str) -> str:
     """Name the kind of failure, which decides whether and how long to back off."""
     status = getattr(exc, "status_code", None)
@@ -332,7 +359,7 @@ def classify(exc: BaseException, provider: str) -> str:
         # that is about this request, not the model.
         return "moderation" if ("moderation" in message or "flagged" in message) else "auth"
     if status == 429 or name == "RateLimitError":
-        if code == "insufficient_quota" or "insufficient_quota" in message or "exceeded your current quota" in message:
+        if is_out_of_credit(exc):
             return "quota"
         if provider == "openrouter" and ("per-day" in message or "per day" in message):
             return "daily_limit"

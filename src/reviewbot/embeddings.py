@@ -89,7 +89,10 @@ def _client():
     # built until we actually embed something.
     from openai import OpenAI  # type: ignore
 
-    return OpenAI()  # reads OPENAI_API_KEY
+    # No SDK retries: _embed_chunk already retries transient failures with
+    # backoff and jitter, and the SDK's own two retries multiplied that (four
+    # attempts became twelve requests), including against an empty account.
+    return OpenAI(max_retries=0)  # reads OPENAI_API_KEY
 
 
 @lru_cache(maxsize=1)
@@ -128,14 +131,13 @@ def _retryable(exc: Exception) -> bool:
     request (a bad model id, an input over the token limit) is not: retrying it
     just burns time and returns the same error.
     """
+    from .llm import is_out_of_credit
+
     name = type(exc).__name__
-    code = str(getattr(exc, "code", "") or "").lower()
-    message = str(getattr(exc, "message", "") or exc).lower()
-    # A 429 is usually transient, but "insufficient_quota" is also a 429 and is
-    # not: the account is out of credit and every retry gets the same answer,
-    # each one after a longer backoff. Retrying it used to cost ~7 seconds per
-    # chunk before giving up.
-    if code == "insufficient_quota" or "insufficient_quota" in message:
+    # A 429 is usually transient, but an empty account is also a 429 and is
+    # not: every retry gets the same answer, each after a longer backoff.
+    # Retrying it cost ~8 seconds and a dozen requests per chunk before giving up.
+    if is_out_of_credit(exc):
         return False
     if name in ("RateLimitError", "APITimeoutError", "APIConnectionError", "InternalServerError"):
         return True

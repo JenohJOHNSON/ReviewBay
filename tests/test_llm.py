@@ -22,10 +22,13 @@ _http = getattr(_sdk_exceptions, "httpx2", None) or getattr(_sdk_exceptions, "ht
 _REQ = _http.Request("POST", "https://api.example/v1/chat/completions")
 
 
-def sdk_error(status: int, message: str, code: str | None = None, headers: dict | None = None):
+def sdk_error(status: int, message: str, code: str | None = None, headers: dict | None = None,
+              type_: str | None = None):
     """A genuine openai exception for this HTTP status."""
     response = _http.Response(status, request=_REQ, headers=headers or {})
     body = {"message": message, "code": code} if code else {"message": message}
+    if type_:
+        body["type"] = type_
     cls = {
         400: openai.BadRequestError, 401: openai.AuthenticationError,
         403: openai.PermissionDeniedError, 404: openai.NotFoundError,
@@ -35,6 +38,17 @@ def sdk_error(status: int, message: str, code: str | None = None, headers: dict 
 
 
 QUOTA = lambda: sdk_error(429, "You exceeded your current quota", code="insufficient_quota")  # noqa: E731
+
+# Verbatim from the production logs on 2026-10-20: the newer form of "out of
+# credit", whose code is NOT insufficient_quota. The first version of classify()
+# took it for a short rate limit.
+NO_CREDITS = lambda: sdk_error(  # noqa: E731
+    429,
+    "You have no credits remaining. Add credits to continue using the API at "
+    "https://platform.openai.com/settings/organization/billing/.",
+    code="credit_balance_exhausted",
+    type_="insufficient_quota",
+)
 
 
 class FakeClient:
@@ -198,6 +212,14 @@ class FallbackTests(GatewayTestCase):
         self.assertEqual(result.failures[0]["kind"], "quota")
         self.assertTrue(result.label()["free"])
 
+    def test_the_production_no_credits_error_sets_openai_aside_for_half_an_hour(self):
+        self.outcomes["openai"]["gpt-4o-mini"] = NO_CREDITS()
+        self.outcomes["openrouter"]["free/a:free"] = "Free answer."
+        self.assertEqual(self.chat().provider, "openrouter")
+        cooling = [c for c in llm.status()["cooling_down"] if c["provider"] == "openai"]
+        self.assertEqual(cooling[0]["kind"], "quota")
+        self.assertGreater(cooling[0]["seconds_left"], 25 * 60)
+
     def test_the_exhausted_provider_is_skipped_on_the_next_request(self):
         self.outcomes["openai"]["gpt-4o-mini"] = QUOTA()
         self.outcomes["openrouter"]["free/a:free"] = "Free answer."
@@ -343,6 +365,7 @@ class ClassificationTests(unittest.TestCase):
 
     CASES = [
         (QUOTA(), "openai", "quota"),
+        (NO_CREDITS(), "openai", "quota"),
         (sdk_error(429, "Rate limit reached for requests"), "openai", "rate_limit"),
         (sdk_error(429, "Rate limit exceeded: free-models-per-day"), "openrouter", "daily_limit"),
         (sdk_error(402, "Insufficient credits"), "openrouter", "credits"),
