@@ -610,6 +610,20 @@ probe cached a negative answer for the life of the process, so an API started
 before the migration kept saying it after the migration ran. Both fixed, and
 both regression-tested (the second with a counted, time-travelled probe).
 
+### F29 — Medium — an empty OpenAI account was mistaken for a rate limit
+
+Found in production, in the logs of the first chat after the database move. The
+error was a 429 with type `insufficient_quota` but code
+`credit_balance_exhausted`; `llm.classify()` matched only the older code, so it
+labelled the account "rate limited". The gateway would then have retried OpenAI
+on a short backoff instead of setting it aside for 30 minutes, and the
+embeddings path, whose retry check had the same gap, retried it four times per
+chunk on top of the SDK's own two retries: twelve requests and ~8 seconds before
+falling back. One shared `llm.is_out_of_credit()` now also reads the error's
+`type` and known codes and phrases; the embeddings client no longer adds SDK
+retries on top of its own backoff loop. Regression-tested with the verbatim
+production error, and the committed classifier was confirmed to fail that test.
+
 ### Deployment ordering, handled rather than documented
 
 With accounts, every page requires sign-in, and sign-in needs migration 003.

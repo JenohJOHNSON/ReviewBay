@@ -100,6 +100,41 @@ Database schema (once): `psql "$DATABASE_URL" -f postgres/ddl.sql`.
 
 ## 7. Recent work (most recent first)
 
+### 2026-10-20 (night) - the database moved from Neon to Railway
+
+- **New database:** Railway's pgvector template (`pgvector/pgvector:pg18`,
+  PostgreSQL 18.6) in project `laudable-fulfillment`, region `sfo` (same as the
+  app), 5 GB volume. Railway's standard Postgres template has no extensions,
+  hence this one. Railway generated the password; it never left Railway.
+- **Migrated and copied** by a temporary service (`db-setup`) built from the
+  branch at commit e07f799: all four migrations applied, then
+  `scripts/copy_database.py` copied 9,546 raw reviews, 6,206 enriched reviews
+  (with embeddings), 2 scrape runs and 2 saved reports from Neon in about 15
+  seconds. Both connection strings were Railway references; neither was seen.
+- **Switched** `ReviewBay`'s `DATABASE_URL` to `${{pgvector.DATABASE_URL_PRIVATE}}`
+  (private network). The live site was verified afterwards: `/readyz` ok, both
+  runs present, Blue Bottle Coffee's 172 reviews served from the new database.
+- **Rollback:** Railway's rollback on the previous ReviewBay deployment restores
+  its variables too, which puts the Neon connection back. Neon itself was only
+  ever read, so it is exactly as it was.
+- Neon had **never had migration 002 applied**; the copy filled the engine
+  metric columns with their defaults, and the new database has all of 002-004.
+
+**Found in production while verifying:**
+
+- **The OpenAI account is out of credits** (`429`, type `insufficient_quota`,
+  code `credit_balance_exhausted`). That is why chat answered "could not search"
+  (the code on `main` has no retrieval fallback) and why PRIVEEL CUSTOM PEPTIDES
+  shows 0 reviews: its 85 were collected but never enriched, because enrichment
+  needs embeddings. They are in `raw.reviews_raw`, waiting.
+- **A bug in the new fallback code (F29):** `llm.classify()` recognised only the
+  older `insufficient_quota` code, so this newer error was taken for a short rate
+  limit and OpenAI would have been retried every minute or so instead of set
+  aside for 30 minutes; the embeddings path retried it twelve times per chunk.
+  Fixed with one shared `llm.is_out_of_credit()` that also reads the error's
+  `type`, tested against the exact production error body.
+
+
 ### 2026-10-20 (evening) - accounts, brand management, OpenRouter fallback
 
 What was asked for: create an account; a searched brand stays in the account;
@@ -353,6 +388,21 @@ API keys.
 ## 8. Pending / next steps
 
 ### Do these first
+
+- [ ] **OpenAI is out of credits.** Chat, enrichment and the QC pass all stop
+      until either credits are added at
+      https://platform.openai.com/settings/organization/billing/ or the branch is
+      deployed with `OPENROUTER_API_KEY` set. Note that new reviews still cannot
+      be enriched without an embeddings provider: free OpenRouter models cannot
+      embed for this database (different vector space), and the same-model
+      fallback through OpenRouter needs OpenRouter credit.
+- [ ] **Delete the `db-setup` service** in Railway once you are happy with the
+      move. Its job is done; it now just idles.
+- [ ] After merging the branch, check ReviewBay's Settings for the pre-deploy
+      command `python scripts/migrate.py`. `railway.json` declares it, but the
+      temporary service showed no sign of Railway applying that file's deploy
+      section, so set it in the dashboard if it is missing. (The database is
+      already fully migrated, so nothing depends on it today.)
 
 - [ ] **Run the migrations BEFORE (or right after) deploying this code.**
       `python scripts/migrate.py --dry-run`, then `python scripts/migrate.py`.
