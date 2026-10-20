@@ -25,15 +25,18 @@ import re
 from collections.abc import Iterator
 
 from ..models import NormalizedReview
+from ..scraping import robots, urlpolicy
 from .base import BaseConnector
 
 log = logging.getLogger(__name__)
 
 _BASE = "https://www.trustpilot.com"
-_UA = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/125.0 Safari/537.36"
-)
+
+# The honest identifier the rest of the project uses, rather than a desktop
+# Chrome string. Claiming to be a browser we are not is how a crawler evades the
+# robots rules that are written for crawlers, and the robots check above is only
+# meaningful if the user agent it is evaluated against is the one we send.
+_UA = robots.USER_AGENT
 _MAX_PAGES = 10  # safety cap regardless of limit
 
 
@@ -51,6 +54,48 @@ class TrustpilotConnector(BaseConnector):
                 brand,
             )
             return
+
+        # This connector predates the scraping package and so predates its two
+        # gates, which left a second fetch path that neither of them governed.
+        #
+        # 1. SSRF. `url` comes from the brand's user-supplied `website` or from
+        #    TRUSTPILOT_URL_<BRAND>, so it is attacker-influenced input being
+        #    handed to a browser that will follow it anywhere, including
+        #    localhost and the cloud metadata endpoint.
+        verdict = urlpolicy.check(url)
+        if not verdict.allowed:
+            log.warning("trustpilot: refusing %s for brand=%s: %s", url, brand, verdict.reason)
+            return
+
+        # 2. robots.txt. The Scrapling engine checks this before every fetch, and
+        #    the documentation says ReviewBay honours robots directives. A second
+        #    path that ignored them made that claim false rather than partial, so
+        #    it is checked here on the same terms.
+        #
+        #    Note what this means in practice: Trustpilot's robots.txt disallows
+        #    unrecognised crawlers, so this connector will now decline rather than
+        #    scrape. That is the correct outcome and not a bug to route around.
+        #    Trustpilot review data through a path that is licensed to serve it is
+        #    what the Apify actor (`apify_source`) is for.
+        if robots.requested_delay_exceeds_limit(url):
+            log.warning(
+                "trustpilot: robots.txt asks for a longer crawl delay than we hold "
+                "(%ss); skipping brand=%s",
+                robots.MAX_HONOURED_DELAY,
+                brand,
+            )
+            return
+        if not robots.can_fetch(url):
+            log.warning(
+                "trustpilot: robots.txt disallows %s for %s; skipping brand=%s. "
+                "Use the Apify actor source if you need Trustpilot data.",
+                url,
+                robots.UA_TOKEN,
+                brand,
+            )
+            return
+
+        delay = robots.crawl_delay(url)
 
         try:
             from playwright.sync_api import sync_playwright  # type: ignore
@@ -71,6 +116,14 @@ class TrustpilotConnector(BaseConnector):
                     if seen >= limit:
                         break
                     page_url = url if n == 1 else f"{url}?page={n}"
+                    # Re-checked per page: robots rules are path-based, the result
+                    # is cached, and a paginated URL is still a separate request.
+                    if n > 1:
+                        if not robots.can_fetch(page_url):
+                            log.info("trustpilot: robots.txt disallows %s; stopping", page_url)
+                            break
+                        if delay:
+                            page.wait_for_timeout(int(delay * 1000))
                     try:
                         page.goto(page_url, wait_until="domcontentloaded", timeout=30000)
                         page.wait_for_timeout(1500)  # let review cards hydrate
