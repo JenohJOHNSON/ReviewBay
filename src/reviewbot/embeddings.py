@@ -12,6 +12,22 @@ change. pgvector still does the vector math (cosine distance via ``<=>``).
 
 Sentiment stays local (vaderSentiment): it's a tiny pure-Python lexicon, no model
 to load, so it carries no memory/crash risk.
+
+**Fallback, and the one rule it must not break.** When OpenAI is out of quota,
+embeddings fall back to OpenRouter — but only to the SAME model,
+`openai/text-embedding-3-small` at the same 768 dimensions. Vectors from
+different embedding models live in different spaces: a query embedded by one
+model and ranked against reviews embedded by another returns confident nonsense,
+silently. OpenRouter lists free embedding models, and they are deliberately NOT
+used. The fallback model is derived from EMBED_MODEL rather than configurable,
+so this cannot be undone by a well-meaning environment variable.
+
+The OpenRouter copy of the model is billed (about $0.02 per million tokens, the
+same as OpenAI's price), so it needs credit on the OpenRouter account; a free
+account gets a 402. Enrichment then saves new reviews without a vector, to be
+filled in by a later pass (`enrich/run.py`), and chat searches by keyword
+(`api/rag.py`).
+OPENROUTER_EMBEDDINGS=0 turns this fallback off.
 """
 
 from __future__ import annotations
@@ -19,6 +35,7 @@ from __future__ import annotations
 import logging
 import os
 import random
+import threading
 import time
 from functools import lru_cache
 
@@ -48,13 +65,57 @@ _MAX_ATTEMPTS = int(os.environ.get("EMBED_MAX_ATTEMPTS", "4"))
 _BACKOFF_BASE = float(os.environ.get("EMBED_BACKOFF_SECONDS", "1.0"))
 
 
+class EmbeddingsUnavailable(RuntimeError):
+    """No provider can embed right now. rag.py answers by keyword search instead."""
+
+
+#: provider -> unix time until which it is skipped (out of quota, no credit, bad key)
+_COOLING: dict[str, float] = {}
+_COOL_LOCK = threading.Lock()
+_COOL_SECONDS = 30 * 60
+
+
+def providers() -> list[tuple[str, str]]:
+    """(provider, model) pairs that produce IDENTICAL vectors, in order."""
+    out = []
+    if os.environ.get("OPENAI_API_KEY"):
+        out.append(("openai", EMBED_MODEL))
+    if os.environ.get("OPENROUTER_API_KEY") and os.environ.get("OPENROUTER_EMBEDDINGS", "1") != "0":
+        out.append(("openrouter", "openai/" + EMBED_MODEL))
+    return out
+
+
 @lru_cache(maxsize=1)
 def _client():
     # Lazy import + cache so importing this module stays cheap and no client is
     # built until we actually embed something.
     from openai import OpenAI  # type: ignore
 
-    return OpenAI()  # reads OPENAI_API_KEY
+    # No SDK retries: _embed_chunk already retries transient failures with
+    # backoff and jitter, and the SDK's own two retries multiplied that (four
+    # attempts became twelve requests), including against an empty account.
+    return OpenAI(max_retries=0)  # reads OPENAI_API_KEY
+
+
+@lru_cache(maxsize=1)
+def _openrouter_client():
+    from openai import OpenAI  # type: ignore
+
+    from .llm import OPENROUTER_BASE_URL
+
+    return OpenAI(base_url=OPENROUTER_BASE_URL, api_key=os.environ["OPENROUTER_API_KEY"],
+                  max_retries=0, default_headers={"X-Title": "ReviewBay"})
+
+
+def _client_for(provider: str):
+    return _openrouter_client() if provider == "openrouter" else _client()
+
+
+def reset_state() -> None:
+    with _COOL_LOCK:
+        _COOLING.clear()
+    _client.cache_clear()
+    _openrouter_client.cache_clear()
 
 
 def _prep(text: str) -> str:
@@ -72,20 +133,27 @@ def _retryable(exc: Exception) -> bool:
     request (a bad model id, an input over the token limit) is not: retrying it
     just burns time and returns the same error.
     """
+    from .llm import is_out_of_credit
+
     name = type(exc).__name__
+    # A 429 is usually transient, but an empty account is also a 429 and is
+    # not: every retry gets the same answer, each after a longer backoff.
+    # Retrying it cost ~8 seconds and a dozen requests per chunk before giving up.
+    if is_out_of_credit(exc):
+        return False
     if name in ("RateLimitError", "APITimeoutError", "APIConnectionError", "InternalServerError"):
         return True
     status = getattr(exc, "status_code", None) or getattr(exc, "http_status", None)
     return isinstance(status, int) and (status == 429 or status >= 500)
 
 
-def _embed_chunk(client, chunk: list[str]) -> list[list[float]]:
+def _embed_chunk(client, chunk: list[str], model: str = EMBED_MODEL) -> list[list[float]]:
     """One embeddings request, retried on transient failures."""
     last: Exception | None = None
     for attempt in range(1, _MAX_ATTEMPTS + 1):
         try:
             resp = client.embeddings.create(
-                model=EMBED_MODEL, input=chunk, dimensions=EMBED_DIM
+                model=model, input=chunk, dimensions=EMBED_DIM
             )
             # resp.data comes back in input order, but sort by index to be safe.
             return [
@@ -113,12 +181,53 @@ def embed(texts: list[str]) -> list[list[float]]:
     """
     if not texts:
         return []
-    client = _client()
     out: list[list[float]] = []
     prepped = [_prep(t) for t in texts]
     for i in range(0, len(prepped), _MAX_INPUTS_PER_CALL):
-        out.extend(_embed_chunk(client, prepped[i : i + _MAX_INPUTS_PER_CALL]))
+        out.extend(_embed_with_fallback(prepped[i : i + _MAX_INPUTS_PER_CALL]))
     return out
+
+
+def _embed_with_fallback(chunk: list[str]) -> list[list[float]]:
+    """Embed one chunk with the first provider that can, all the same model."""
+    chain = providers()
+    if not chain:
+        raise EmbeddingsUnavailable(
+            "no embeddings provider is configured: set OPENAI_API_KEY "
+            "(or OPENROUTER_API_KEY, which serves the same model)"
+        )
+    from .llm import classify
+
+    last: Exception | None = None
+    for index, (provider, model) in enumerate(chain):
+        with _COOL_LOCK:
+            until = _COOLING.get(provider, 0.0)
+        if until > time.time():
+            continue
+        try:
+            vectors = _embed_chunk(_client_for(provider), chunk, model)
+        except Exception as exc:  # noqa: BLE001 - classified, then the next provider
+            last = exc
+            kind = classify(exc, provider)
+            if kind in ("quota", "credits", "auth"):
+                with _COOL_LOCK:
+                    _COOLING[provider] = time.time() + _COOL_SECONDS
+            more = index + 1 < len(chain)
+            log.warning("embeddings: %s failed (%s)%s", provider, kind,
+                        "; trying the same model through the next provider" if more else "")
+            continue
+        if any(len(v) != EMBED_DIM for v in vectors):
+            # A provider that ignored `dimensions` would write vectors the
+            # vector(768) column rejects, or worse, a truncated space.
+            raise EmbeddingsUnavailable(
+                f"{provider} returned vectors that are not {EMBED_DIM}-dimensional"
+            )
+        if index:
+            log.info("embeddings: served by %s (%s) as a fallback", provider, model)
+        return vectors
+    if last is not None:
+        raise last
+    raise EmbeddingsUnavailable("every embeddings provider is cooling down after a quota error")
 
 
 def embed_one(text: str) -> list[float]:

@@ -147,8 +147,9 @@
   <nav class="links">
     <a class="txt" href="#pipeline">Pipeline</a>
     <a class="txt" href="#ask">Ask</a>
+    <a class="txt" href="/login" id="lpAccount">Sign in</a>
     <a class="ghostbtn" href="/chat">Try the chat</a>
-    <a class="arrowbtn" href="/start"><span class="ar" aria-hidden="true">&rarr;</span><span class="tx">Add a brand</span></a>
+    <a class="arrowbtn" href="/signup?next=%2Fstart"><span class="ar" aria-hidden="true">&rarr;</span><span class="tx">Add a brand</span></a>
   </nav>
 </header>
 
@@ -157,9 +158,9 @@
   <div>
     <div class="lbl">// Brand intelligence platform</div>
     <h1 class="fx-pixelate">Every review on the internet. One <span class="fx-glitch" data-text="answer">answer</span> engine.</h1>
-    <p class="lead">ReviewBay gathers every public review of a brand, stores it in Neon with pgvector, and lets you ask questions in plain English, with links back to the original reviews. No dashboards to build. No guesswork.</p>
+    <p class="lead">ReviewBay gathers every public review of a brand, stores it in Postgres with pgvector, and lets you ask questions in plain English, with links back to the original reviews. No dashboards to build. No guesswork.</p>
     <div class="cta-row">
-      <a class="arrowbtn" href="/start"><span class="ar" aria-hidden="true">&rarr;</span><span class="tx">Add your first brand</span></a>
+      <a class="arrowbtn" href="/signup?next=%2Fstart"><span class="ar" aria-hidden="true">&rarr;</span><span class="tx">Add your first brand</span></a>
       <a class="ghostbtn" href="#pipeline">&rarr; See the pipeline</a>
     </div>
   </div>
@@ -235,9 +236,9 @@
       <div class="top">
         <span class="kick">/ Store</span>
       </div>
-      <h3>Everything lands in Neon and pgvector. One schema.</h3>
+      <h3>Everything lands in Postgres and pgvector. One schema.</h3>
       <p>Raw mentions are normalized into a single review model: source, author, rating, sentiment, product line. Your Postgres, your data, queryable from day one.</p>
-      <div class="tags">Neon Postgres &middot; ELT, not CSVs &middot; Full history retained</div>
+      <div class="tags">Postgres + pgvector &middot; ELT, not CSVs &middot; Full history retained</div>
     </div>
     <div class="stage">
       <div class="top">
@@ -289,7 +290,7 @@
       <div class="lbl">// Get started</div>
       <h2 style="font:var(--text-display-l);color:var(--text-0);margin:20px 0 16px">Ready to hear what your customers are already saying?</h2>
       <p style="font:400 16px/1.6 var(--font);color:var(--text-1);margin:0 0 30px;max-width:52ch">Point ReviewBay at a brand name. The dashboard fills in as reviews arrive, and the chat answers with citations. No data engineering. No setup project.</p>
-      <a class="arrowbtn" href="/start"><span class="ar" aria-hidden="true">&rarr;</span><span class="tx">Add a brand</span></a>
+      <a class="arrowbtn" href="/signup?next=%2Fstart"><span class="ar" aria-hidden="true">&rarr;</span><span class="tx">Add a brand</span></a>
     </div>
     <div class="art" style="justify-self:end">
       <pre class="fx-ascii fx-ascii-glitch" aria-hidden="true" data-text="      @@
@@ -314,16 +315,17 @@
   <div class="footgrid">
     <div>
       <div style="font-family:var(--font-display);font-weight:600;font-size:18px;color:var(--text-0)"><span style="color:var(--accent)">//</span> ReviewBay</div>
-      <p style="font:400 14px/1.6 var(--font);color:var(--text-1);margin:16px 0 22px;max-width:42ch">Brand-reputation intelligence. Gather every mention. Store it in Neon. Ask it anything, with receipts.</p>
+      <p style="font:400 14px/1.6 var(--font);color:var(--text-1);margin:16px 0 22px;max-width:42ch">Brand-reputation intelligence. Gather every mention. Store it in Postgres. Ask it anything, with receipts.</p>
       <div class="badges">
         <span>Public data only</span>
         <span>Cited answers</span>
-        <span>Your data in Neon</span>
+        <span>Your data in Postgres</span>
       </div>
     </div>
     <div class="col">
       <div class="h">Product</div>
       <a href="/start">Add a brand</a>
+      <a href="/brands">My brands</a>
       <a href="/dashboard">Dashboard</a>
       <a href="/compare">Compare</a>
       <a href="/chat">Ask the reviews</a>
@@ -337,5 +339,13 @@
   </div>
   <div class="copyline"><div>&copy; 2026 ReviewBay. Every answer shows its work.</div></div>
 </footer>
+<script>
+// Signed in already: the header's "Sign in" becomes a way back to your brands.
+fetch('/api/auth/me').then(r => r.ok ? r.json() : null).then(d => {
+  if (!d || !d.user) return;
+  const a = document.getElementById('lpAccount');
+  if (a) { a.textContent = 'My brands'; a.href = '/brands'; }
+}).catch(() => {});
+</script>
 </body>
 </html>

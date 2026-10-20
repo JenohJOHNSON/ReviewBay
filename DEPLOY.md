@@ -74,21 +74,29 @@ Alternative (from GitHub instead of copying): on the server, install GitHub CLI,
 run `gh auth login`, then `gh repo clone javidjmg28/reviewbay ~/reviewbay`, and
 create `.env` from `.env.example` with your secrets.
 
-## 6. Set a password (do this for a public server)
+## 6. Decide who can sign up (do this for a public server)
 
-On the SERVER:
+ReviewBay has accounts: every page except the landing page needs one, and each
+person's brands and saved reports belong to their account. Signup is OPEN by
+default, and every brand someone adds is scraped on a schedule, which costs
+money. On the SERVER:
 
 ```
 cd ~/reviewbay
 nano .env
 ```
 
-Find these two lines near the bottom and set a login you choose:
+Set these near the bottom:
 
 ```
-AUTH_USER=youruser
-AUTH_PASS=pick-a-long-password
+ADMIN_EMAILS=you@example.com          # your own address; create this account first
+SIGNUP_INVITE_CODE=pick-a-code        # anyone signing up must type it
 ```
+
+Once everyone has an account you can close registration with
+`SIGNUP_ENABLED=0`. The old site-wide password (`AUTH_USER`/`AUTH_PASS`) still
+works as an extra wall in front of everything, but it is no longer what keeps
+one person's brands and reports from another.
 
 Save with Ctrl then O then Enter, exit with Ctrl then X.
 
@@ -100,6 +108,16 @@ On the server:
 cd ~/reviewbay
 ./scripts/test.sh
 docker compose up -d --build
+```
+
+Then apply the database schema. **This is required before anyone can sign
+in**: the accounts live in tables that migration 003 creates. It is safe to
+re-run; every migration in `postgres/` is additive and idempotent, and the
+runner refuses to execute anything that drops, truncates or retypes:
+
+```
+docker compose run --rm worker python scripts/migrate.py --dry-run   # look first
+docker compose run --rm worker python scripts/migrate.py             # apply
 ```
 
 The first build takes a few minutes. Enrichment uses the OpenAI embeddings API,
@@ -119,8 +137,9 @@ curl -s localhost:8000/readyz
 http://YOUR_PUBLIC_IP:8000
 ```
 
-It asks for the username and password from step 6. That is ReviewBay, live 24/7,
-running whether or not your laptop is on.
+Choose "Add your first brand" and create your account with the address you put
+in `ADMIN_EMAILS` (and the invite code, if you set one). That is ReviewBay, live
+24/7, running whether or not your laptop is on.
 
 ## Running it day to day
 
@@ -128,6 +147,137 @@ running whether or not your laptop is on.
 - Logs: `docker compose logs -f api` or `docker compose logs -f worker`.
 - Update after code changes: `git pull` (if you cloned) then `docker compose up -d --build`.
 - Stop: `docker compose down`. Start: `docker compose up -d`.
+
+## Deploying on Railway instead
+
+`docker-compose.yml` runs **two** services, and both matter:
+
+| Service | What it does | Public? |
+|---|---|---|
+| `api` | the website, the chatbot, and onboarding-time collection | yes |
+| `worker` | the Airbyte import, the free local sources, enrichment, and the QC pass | no |
+
+A compose deployment gets both. A Railway deployment needs them created as two
+services, because `railway.json` describes only the API — so a Railway project
+built from that file alone has no worker, and scheduled refresh, the Airbyte
+import and the global QC pass never run. The symptom is subtle rather than loud:
+the site works, the dashboard shows data, and the data quietly stops being
+refreshed.
+
+To run both on Railway, create two services from the same repository and point
+each at its own config file (Railway service settings → *Config-as-code path*):
+
+| Service | Config-as-code path | Networking |
+|---|---|---|
+| `reviewbay-api` | `railway.json` | generate a domain |
+| `reviewbay-worker` | `railway.worker.json` | none — it serves no HTTP |
+
+Give both the same environment variables; the worker needs `DATABASE_URL` and
+`OPENAI_API_KEY` (or `OPENROUTER_API_KEY`) at minimum. The worker refreshes
+every brand any account tracks, read from the database, so it no longer needs
+to share a disk with the API. Do **not** set a healthcheck path on the worker: it
+is a loop, not a server, and Railway would fail the deploy waiting for an HTTP
+200 that never comes.
+
+If you would rather run one service, that is a legitimate choice for a small
+deployment — but then nothing runs the worker's cycle, so schedule it externally
+instead of leaving the gap:
+
+```
+RUN_ONCE=1 python -m reviewbot.worker
+```
+
+That performs exactly one cycle and exits, which is what a Railway cron service
+or any external scheduler wants. `WORKER_INTERVAL_SECONDS` (default 900) only
+applies to the long-running form.
+
+The browser tier for client-rendered review pages belongs on the worker and
+nowhere else:
+
+```
+docker build --build-arg WITH_BROWSER=1 -f docker/worker.Dockerfile .
+```
+
+It adds roughly 400MB and a Chromium process of 150-300MB resident. The API
+serves a dashboard on a small instance and has no business launching browsers.
+
+## The database on Railway
+
+ReviewBay needs Postgres with the **pgvector** extension. Railway's standard
+PostgreSQL template does not include extensions (Railway's docs say they will
+not add any), so the database is Railway's documented pgvector template, which
+runs the pgvector project's own image (`pgvector/pgvector:pg18`) on a persistent
+volume. Railway generates its password; nobody has to handle it.
+
+Wire it to the app with a reference, so the password never leaves Railway and
+traffic stays on the private network:
+
+```
+DATABASE_URL=${{pgvector.DATABASE_URL_PRIVATE}}
+```
+
+Migrations then need no manual step: `railway.json` sets
+`preDeployCommand = python scripts/migrate.py`, so every deploy migrates the
+database before the new version starts. If a migration fails, the deploy stops
+and the previous version keeps serving.
+
+### Moving existing data in (done once)
+
+`scripts/copy_database.py` copies every ReviewBay table from the old database
+into the new one. It ran as a temporary Railway service built from this
+repository, with two variables that are both references, so no password was
+typed anywhere:
+
+```
+DATABASE_URL=${{pgvector.DATABASE_URL_PRIVATE}}     # copy into
+SOURCE_DATABASE_URL=${{ReviewBay.DATABASE_URL}}      # copy from (the old database)
+```
+
+and this start command:
+
+```
+sh -c "python scripts/migrate.py && python scripts/copy_database.py; exec uvicorn reviewbot.api.main:app --host 0.0.0.0 --port ${PORT:-8000}"
+```
+
+The repository's `railway.json` applies to that service too, and it has a
+`/healthz` health check, which is why the command finishes by starting the app:
+the deploy then completes cleanly and the copy's summary stays in its logs.
+(Railway no longer lets a service point at a different config file; config files
+are deprecated in favour of its newer infrastructure-as-code format.)
+
+The copy never writes to the source and never overwrites a row in the target,
+so running it again only fills in rows written to the old database during the
+switch. Delete the temporary service afterwards.
+
+### Rolling back
+
+The old database is left exactly as it was. Pointing `DATABASE_URL` back at it
+(from its provider's console) restores the previous state; anything written to
+the new database in the meantime stays there.
+
+## Upgrading a deployment that predates accounts
+
+1. **Migrate first.** From your own machine, with the production connection
+   string (the runner prints only the host, never the password):
+
+   ```
+   DATABASE_URL="postgresql://...neon.tech/...?sslmode=require" python scripts/migrate.py --dry-run
+   DATABASE_URL="postgresql://...neon.tech/...?sslmode=require" python scripts/migrate.py
+   ```
+
+   Both images also contain the runner now, so `python scripts/migrate.py` works
+   from a Railway service shell or `docker compose run --rm api ...` too. If the
+   new code goes out before the migration, nothing breaks silently: sign-up
+   answers with the command to run.
+
+2. **Set `ADMIN_EMAILS`** and a signup policy (step 6 above), then deploy.
+
+3. **Create your account.** Brands that were in your browser before accounts are
+   still in its storage; the My brands page offers to import them. Each person
+   gets the same offer in their own browser.
+
+4. **Saved reports from before accounts** have no owner. They stay reachable
+   through their share links, and admins can still open them.
 
 ## Later upgrades (optional)
 

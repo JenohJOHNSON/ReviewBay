@@ -8,6 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Funnel+Display:wght@400;500;600;700&family=Public+Sans:wght@400;500;600&family=Martian+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/theme.css">
+<script src="/static/account.js"></script>
 <script src="/static/brands.js"></script>
 <style>
   .hero { text-align:center; margin:12px 0 28px; }
@@ -42,6 +43,7 @@
   <a href="/" class="brand">ReviewBay</a>
   <span class="sp"></span>
   <nav class="nav">
+    <a href="/brands">My brands</a>
     <a href="/start" class="active">Add brand</a>
     <a href="/dashboard">Dashboard</a>
     <a href="/compare">Compare</a>
@@ -65,6 +67,7 @@
         <input id="site" placeholder="e.g. bluebottlecoffee.com" autocomplete="off" />
       </div>
       <button id="go" class="btn block" type="submit">Start monitoring</button>
+      <p class="formerr" id="formErr" role="alert"></p>
     </form>
     <div class="existing hidden" id="existing">
       <div class="lbl">Your brands</div>
@@ -103,12 +106,13 @@ const $ = id => document.getElementById(id);
 function esc(s){ return (s==null?'':String(s)).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 let currentBrand = null, poll = null;
 
-function loadExisting(){
-  // The brand list lives in this browser only (localStorage), so a fresh
-  // visitor starts clean and never sees what someone else has tested.
-  const brands = window.RB_Brands ? RB_Brands.list() : [];
+async function loadExisting(){
+  // Your account's brands: the same list from any browser.
+  await RB_Brands.ready();
+  const brands = RB_Brands.list();
   if(!brands.length) return;
-  $('chips').innerHTML = brands.map(b => `<a class="chip" href="/dashboard?brand=${encodeURIComponent(b)}">${esc(b)}</a>`).join('');
+  $('chips').innerHTML = brands.map(b => `<a class="chip" href="/dashboard?brand=${encodeURIComponent(b)}">${esc(b)}</a>`).join('')
+    + '<a class="chip" href="/brands">Manage brands</a>';
   $('existing').classList.remove('hidden');
 }
 
@@ -193,14 +197,23 @@ $('form').addEventListener('submit', async (e) => {
   if(!name) return;
   const website = $('site').value.trim() || null;
   $('go').disabled = true; $('go').textContent = 'Starting';
+  $('formErr').textContent = '';
   try {
     const res = await fetch('/api/brands', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ name, website })
     });
-    const data = await res.json();
+    let data = {};
+    try { data = await res.json(); } catch (_) {}
+    // A refused add (a website the server will not fetch, the brand limit) used
+    // to fall through to the progress screen for a brand that was never added.
+    if (!res.ok || !data.ok) {
+      $('formErr').textContent = data.message || ('Could not add that brand (' + res.status + ').');
+      $('go').disabled = false; $('go').textContent = 'Start monitoring';
+      return;
+    }
     currentBrand = data.brand || name;
-    if (window.RB_Brands) RB_Brands.add(currentBrand);  // remember in this browser
+    RB_Brands.refresh();  // it is in your account now
     $('formCard').classList.add('hidden');
     $('progCard').classList.remove('hidden');
     $('openDash').onclick = () => location.href = '/dashboard?brand=' + encodeURIComponent(currentBrand);
@@ -213,6 +226,10 @@ $('form').addEventListener('submit', async (e) => {
   }
 });
 $('retry')?.addEventListener('click', (e)=>{ e.preventDefault(); location.reload(); });
+
+// Arriving from "add it to your brands" elsewhere: /start?brand=Acme
+const _pre = (new URLSearchParams(location.search).get('brand') || '').trim();
+if (_pre) $('brand').value = _pre.slice(0, 120);
 
 loadExisting();
 </script>

@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ReviewBay: Sign in</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Funnel+Display:wght@400;500;600;700&family=Public+Sans:wght@400;500;600&family=Martian+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/theme.css">
+<style>
+  .authwrap { max-width: 420px; margin: 48px auto 80px; padding: 0 16px; }
+  .authwrap h1 { font-size: 30px; line-height: 1.15; letter-spacing: -.02em; margin: 0 0 8px; }
+  .authwrap .lede { color: var(--muted); margin: 0 0 22px; }
+  .field { margin-bottom: 16px; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .switch { margin-top: 18px; text-align: center; color: var(--muted); font-size: 14px; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a href="/" class="brand">ReviewBay</a>
+  <span class="sp"></span>
+</header>
+<main class="authwrap">
+  <h1 id="title">Sign in</h1>
+  <p class="lede" id="lede">Your brands and reports are saved to your account.</p>
+
+  <div class="notice warn hidden" id="setup"></div>
+
+  <div class="card">
+    <form id="form" novalidate>
+      <div class="field">
+        <label for="email">Email</label>
+        <input id="email" type="email" autocomplete="email" required maxlength="254" />
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input id="password" type="password" autocomplete="current-password" required maxlength="256" />
+        <div class="hint hidden" id="pwHint"></div>
+      </div>
+      <div class="field hidden" id="inviteField">
+        <label for="invite">Invite code</label>
+        <input id="invite" type="text" autocomplete="off" maxlength="200" />
+      </div>
+      <button id="go" class="btn block" type="submit">Sign in</button>
+      <p class="formerr" id="err" role="alert"></p>
+    </form>
+  </div>
+  <p class="switch" id="switch"></p>
+</main>
+<script src="/static/account.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const SIGNUP = location.pathname === '/signup';
+const params = new URLSearchParams(location.search);
+const next = RB_Account.safeNext(params.get('next'), SIGNUP ? '/start' : '/brands');
+let config = { signup_enabled: true, invite_required: false, password_min: 8, database: true };
+
+function withNext(path){
+  const n = params.get('next');
+  return n ? path + '?next=' + encodeURIComponent(RB_Account.safeNext(n)) : path;
+}
+
+function render(){
+  document.title = 'ReviewBay: ' + (SIGNUP ? 'Create account' : 'Sign in');
+  $('title').textContent = SIGNUP ? 'Create your account' : 'Sign in';
+  $('lede').textContent = SIGNUP
+    ? 'Track brands from any browser. Everything you search stays in your account.'
+    : 'Your brands and reports are saved to your account.';
+  $('go').textContent = SIGNUP ? 'Create account' : 'Sign in';
+  $('password').autocomplete = SIGNUP ? 'new-password' : 'current-password';
+  $('pwHint').textContent = 'At least ' + config.password_min + ' characters.';
+  $('pwHint').classList.toggle('hidden', !SIGNUP);
+  $('inviteField').classList.toggle('hidden', !(SIGNUP && config.invite_required));
+
+  const sw = $('switch');
+  sw.textContent = '';
+  if (SIGNUP) {
+    sw.append('Already have an account? ');
+    const a = document.createElement('a'); a.href = withNext('/login'); a.textContent = 'Sign in';
+    sw.append(a);
+  } else if (config.signup_enabled) {
+    sw.append('New to ReviewBay? ');
+    const a = document.createElement('a'); a.href = withNext('/signup'); a.textContent = 'Create an account';
+    sw.append(a);
+  }
+
+  const setup = $('setup');
+  if (!config.database) {
+    setup.textContent = 'Accounts need the database, which is not configured on this server yet. '
+      + 'Set DATABASE_URL and run python scripts/migrate.py.';
+    setup.classList.remove('hidden');
+  } else if (config.accounts === false) {
+    setup.textContent = 'Accounts are not set up on this server yet. Its owner needs to run '
+      + 'python scripts/migrate.py once to create the account tables.';
+    setup.classList.remove('hidden');
+    $('go').disabled = true;
+  } else if (SIGNUP && !config.signup_enabled) {
+    setup.textContent = 'New accounts are not being created on this server. Ask its owner for access.';
+    setup.classList.remove('hidden');
+    $('go').disabled = true;
+  }
+}
+
+$('form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const email = $('email').value.trim();
+  const password = $('password').value;
+  if (!email || !password) { $('err').textContent = 'Enter your email and password.'; return; }
+  $('err').textContent = '';
+  $('go').disabled = true;
+  const label = $('go').textContent;
+  $('go').textContent = SIGNUP ? 'Creating account' : 'Signing in';
+  try {
+    const body = { email, password };
+    if (SIGNUP && config.invite_required) body.invite_code = $('invite').value.trim();
+    const res = await fetch(SIGNUP ? '/api/auth/signup' : '/api/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    let data = {};
+    try { data = await res.json(); } catch (_) {}
+    if (res.ok && data.ok) { location.href = next; return; }
+    $('err').textContent = (data && data.message) || ('Something went wrong (' + res.status + ').');
+  } catch (err) {
+    $('err').textContent = 'Could not reach the server. Check your connection and try again.';
+  }
+  $('go').disabled = false;
+  $('go').textContent = label;
+});
+
+(async function init(){
+  try {
+    const r = await fetch('/api/auth/config');
+    if (r.ok) config = Object.assign(config, await r.json());
+  } catch (_) {}
+  render();
+  $('email').focus();
+})();
+</script>
+</body>
+</html>

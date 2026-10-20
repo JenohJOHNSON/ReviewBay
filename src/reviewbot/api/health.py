@@ -215,7 +215,19 @@ def collection_health(brand: str | None = None) -> dict:
         "connectors": connector_statuses(),
     }
     if not engines.get("available"):
-        payload["migration_required"] = (
-            "Run postgres/002_scraping_engines.sql to record per-engine collection metrics."
-        )
+        # Two different situations, which used to share one message: the engine
+        # columns are missing (the operator has a migration to run), or they
+        # exist and no run has recorded engine metrics for this brand yet (a
+        # brand refreshed only by the worker, or one whose first collection is
+        # still going). Telling the second operator to "run the migration" sent
+        # them to re-apply a migration that had already succeeded.
+        if runs._extended_available():
+            payload["engines_note"] = (
+                "No collection run has recorded per-engine metrics for this brand yet. "
+                "They appear after its next collection."
+            )
+        else:
+            payload["migration_required"] = (
+                "Run python scripts/migrate.py to record per-engine collection metrics."
+            )
     return payload

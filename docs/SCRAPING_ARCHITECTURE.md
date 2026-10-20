@@ -170,6 +170,15 @@ Trustpilot's live robots.txt disallows this user agent, so the depth engine
 declines to fetch it. That is the mechanism working, and it is why the Trustpilot
 site strategy in `config/extraction_strategies.yml` is unlikely to be exercised.
 
+**Both gates apply to every fetch path, including the ones that predate them.**
+`connectors/playwright_source.py` was written before this package and so had
+neither check: it built a URL from the brand's user-supplied `website` and handed
+it to a browser, with a spoofed desktop-Chrome user agent and no robots lookup.
+It now passes `urlpolicy.check()` and `robots.can_fetch()` on the same terms as
+everything else, which means it declines too. A compliance posture with one path
+that skips it is not a compliance posture, and the claim above would have been
+false rather than partial for as long as that path existed.
+
 ### Bounds
 
 Every one of these is a configured limit, not a hope
@@ -418,18 +427,18 @@ escaper (`& < > " '`), asserted by
 `tests/test_api_smoke.py::FrontendEscapingTests`, and the URL policy refuses
 those characters at the boundary as well.
 
-### Still open, by decision
+### Saved reports: closed by accounts
 
-`GET /api/reports/saved/{id}` takes a `bigserial` and is protected only by the
-optional global basic-auth gate. With `AUTH_USER`/`AUTH_PASS` unset — the default
-— any visitor can enumerate `1..N` and read every saved report. Share links use
-`secrets.token_urlsafe(9)` (72 bits) and are *designed* to be public; the by-id
-endpoint was not, and the two are currently equally exposed.
+`GET /api/reports/saved/{id}` used to take a `bigserial` protected only by the
+optional global basic-auth gate, so with that gate off any visitor could
+enumerate `1..N` and read every saved report. It was documented rather than
+changed at the time because there was no per-user model to scope it to.
 
-This is **documented rather than changed** because the dashboard uses that
-endpoint and the app has no per-user model to scope it to. Fixing it properly
-means introducing ownership, which is a product decision. **Set `AUTH_USER` and
-`AUTH_PASS` on any deployment with real brands in it.**
+Accounts provided one. Saved reports now carry an `owner_id` and are listed and
+opened only by their owner; "not yours" and "does not exist" are the same 404.
+Share links (`secrets.token_urlsafe(9)`, 72 bits) remain public by design.
+Reports saved before accounts have no owner and are visible to `ADMIN_EMAILS`
+only. See `docs/ARCHITECTURE_AUDIT.md` §7.
 
 ---
 

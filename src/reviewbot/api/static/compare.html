@@ -8,6 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Funnel+Display:wght@400;500;600;700&family=Public+Sans:wght@400;500;600&family=Martian+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/theme.css">
+<script src="/static/account.js"></script>
 <script src="/static/brands.js"></script>
 <style>
   :root { --a:#CBFB5E; --b:#6EA8FF; }   /* two distinct series: chartreuse vs blue */
@@ -49,6 +50,7 @@
   <a href="/" class="brand">ReviewBay</a>
   <span class="sp"></span>
   <nav class="nav">
+    <a href="/brands">My brands</a>
     <a href="/start">Add brand</a>
     <a href="/dashboard">Dashboard</a>
     <a href="/compare" class="active">Compare</a>
@@ -165,7 +167,7 @@ function insightsBox(a, b){
     <div class="insnote">Based on the reviews collected for each brand. We use recent, relevant samples, so figures are directional rather than exhaustive.</div></div>`;
 }
 
-function myBrands(){ return window.RB_Brands ? RB_Brands.list() : []; }
+function myBrands(){ return RB_Brands.list(); }
 
 async function load(){
   const brands = myBrands();
@@ -191,8 +193,9 @@ async function load(){
   content.innerHTML = html;
 }
 
-// Fill both pickers from this browser's own brand history, then compare.
-(function init(){
+// Fill both pickers from your account's brands, then compare.
+(async function init(){
+  await RB_Brands.ready();
   const brands = myBrands();
   fillSelect(selA, brands, '');
   fillSelect(selB, brands, '');

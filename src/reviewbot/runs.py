@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from datetime import datetime, timezone
 
 from . import db
@@ -25,19 +26,31 @@ from . import db
 log = logging.getLogger(__name__)
 
 _EXTENDED_COLUMNS = ("engines", "by_engine", "target", "floor", "ai_calls", "ai_cost_usd")
-#: None = not probed yet. Cached per process because the schema does not change
-#: under a running container.
+#: None = not probed yet. A positive answer is cached for good: columns are
+#: never removed. A negative one is re-checked every _REPROBE_SECONDS, because
+#: the migration is usually run against a database the API is ALREADY serving,
+#: and caching "no" for the life of the process meant the dashboard kept saying
+#: "run the migration" after it had been run, until someone restarted the API.
 _HAS_EXTENDED: bool | None = None
+_PROBED_AT = 0.0
+_REPROBE_SECONDS = 60.0
 _PROBE_LOCK = threading.Lock()
 
 
 def _extended_available() -> bool:
-    global _HAS_EXTENDED
-    if _HAS_EXTENDED is not None:
-        return _HAS_EXTENDED
+    global _HAS_EXTENDED, _PROBED_AT
+
+    def fresh() -> bool:
+        return _HAS_EXTENDED is True or (
+            _HAS_EXTENDED is False and time.monotonic() - _PROBED_AT < _REPROBE_SECONDS
+        )
+
+    if fresh():
+        return bool(_HAS_EXTENDED)
     with _PROBE_LOCK:
-        if _HAS_EXTENDED is not None:
-            return _HAS_EXTENDED
+        if fresh():
+            return bool(_HAS_EXTENDED)
+        _PROBED_AT = time.monotonic()
         try:
             with db.connection() as conn:
                 with conn.cursor() as cur:

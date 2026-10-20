@@ -291,5 +291,68 @@ class TimerTests(unittest.TestCase):
         self.assertGreaterEqual(timer.ms, 0)
 
 
+
+class ColumnProbeTests(unittest.TestCase):
+    """runs._extended_available: "yes" is cached for good, "no" is re-checked.
+
+    Caching "no" for the life of the process meant an API started before the
+    migration kept telling the operator to run it after they had.
+    """
+
+    def setUp(self):
+        from reviewbot import runs
+
+        self.runs = runs
+        runs._HAS_EXTENDED, runs._PROBED_AT = None, 0.0
+        self.addCleanup(setattr, runs, "_HAS_EXTENDED", None)
+        self.probes = 0
+        self.columns = 0
+
+    def _connection(self):
+        import contextlib
+
+        test = self
+
+        class Cursor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def execute(self, *a, **k):
+                test.probes += 1
+
+            def fetchone(self):
+                return (test.columns,)
+
+        class Conn:
+            def cursor(self):
+                return Cursor()
+
+        @contextlib.contextmanager
+        def connection():
+            yield Conn()
+
+        return connection
+
+    def test_a_negative_answer_is_rechecked_after_the_interval(self):
+        from unittest import mock
+
+        clock = [1000.0]
+        with mock.patch.object(self.runs.db, "connection", self._connection()),                 mock.patch.object(self.runs.time, "monotonic", lambda: clock[0]):
+            self.assertFalse(self.runs._extended_available())
+            self.assertFalse(self.runs._extended_available())
+            self.assertEqual(self.probes, 1)  # cached within the interval
+
+            self.columns = len(self.runs._EXTENDED_COLUMNS)  # the migration ran
+            clock[0] += self.runs._REPROBE_SECONDS + 1
+            self.assertTrue(self.runs._extended_available())
+            self.assertEqual(self.probes, 2)
+
+            clock[0] += 10 * self.runs._REPROBE_SECONDS
+            self.assertTrue(self.runs._extended_available())
+            self.assertEqual(self.probes, 2)  # a positive answer is never re-probed
+
 if __name__ == "__main__":
     unittest.main()

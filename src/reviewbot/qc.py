@@ -31,7 +31,7 @@ import logging
 import os
 from collections import defaultdict
 
-from . import db, prompting
+from . import db, llm, prompting
 
 log = logging.getLogger("reviewbot.qc")
 
@@ -76,12 +76,6 @@ _SYSTEM = (
 )
 
 
-def _client():
-    from openai import OpenAI  # type: ignore
-
-    return OpenAI()  # reads OPENAI_API_KEY
-
-
 def _judge_batch(brand: str, items: list[tuple]) -> dict:
     """items: list of (id, text). Returns {id: (relevant_bool, sentiment_str)}.
 
@@ -95,16 +89,23 @@ def _judge_batch(brand: str, items: list[tuple]) -> dict:
         f"id as the index in your reply):\n{numbered}"
     )
     try:
-        resp = _client().chat.completions.create(
-            model=QC_MODEL,
+        # Same model, API and parameters as before the gateway; the gateway adds
+        # a fallback only if OPENROUTER_TASKS includes "qc" (see llm.py for why
+        # it does not by default).
+        result = llm.complete(
+            "qc",
+            system=_SYSTEM,
+            user=user,
+            json_mode=True,
             temperature=0,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": _SYSTEM},
-                {"role": "user", "content": user},
-            ],
+            openai_model=QC_MODEL,
+            openai_api="chat",
         )
-        data = json.loads(resp.choices[0].message.content or "{}")
+        data = json.loads(result.text or "{}")
+    except llm.LLMUnavailable as exc:
+        log.warning("qc: no model available for brand=%s (%d items, %d attempt(s)); left un-checked",
+                    brand, len(items), len(exc.failures))
+        return {}
     except Exception:  # noqa: BLE001 — a failed batch just stays un-checked
         log.exception("qc: judge batch failed for brand=%s (%d items)", brand, len(items))
         return {}
@@ -167,6 +168,18 @@ def qc(brand: str | None = None, limit: int = _MAX_ROWS) -> dict:
 
     if not rows:
         return {"checked": 0, "irrelevant": 0}
+
+    # Without a model every batch would fail individually and log a traceback, so
+    # a key-less deployment running this on a 15-minute loop would write ~24
+    # tracebacks an hour for a condition that is configuration, not an error. The
+    # trusted-source pass above has already done its (free) work by this point.
+    if not llm.available("qc", QC_MODEL):
+        log.info(
+            "qc: no model is configured for QC, skipping the relevance pass for %d row(s). "
+            "They keep relevant = NULL, so they still show on the dashboard.",
+            len(rows),
+        )
+        return {"checked": 0, "irrelevant": 0, "skipped": len(rows), "reason": "no_llm_provider"}
 
     # Group by brand BEFORE batching. A batch asks one question about one brand,
     # so a batch must never span brands.

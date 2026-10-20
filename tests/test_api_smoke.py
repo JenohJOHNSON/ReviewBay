@@ -4,13 +4,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from auth_helpers import SignedIn
 from fastapi.testclient import TestClient
+from memory_store import MemoryStore
 
 from reviewbot.api import main
 from reviewbot.api.rag import Answer, Source
 
 
-class ApiSmokeTests(unittest.TestCase):
+class ApiSmokeTests(SignedIn, unittest.TestCase):
     def test_core_routes(self) -> None:
         client = TestClient(main.app)
         source = Source(
@@ -28,8 +30,10 @@ class ApiSmokeTests(unittest.TestCase):
             main.insights, "get_insights", return_value={"summary": "No reviews", "reviews_analyzed": 0}
         ), patch.object(main.rag, "answer", return_value=Answer("Grounded answer [1].", [source])):
             self.assertEqual(client.get("/healthz").json(), {"status": "ok"})
-            self.assertEqual(client.get("/api/stats").json(), {"total": 0})
-            self.assertEqual(client.get("/api/insights").json()["summary"], "No reviews")
+            self.assertEqual(client.get("/api/stats?brand=Blue%20Bottle").json(), {"total": 0})
+            self.assertEqual(
+                client.get("/api/insights?brand=Blue%20Bottle").json()["summary"], "No reviews"
+            )
             chat = client.post("/chat", json={"question": "What do people say?", "brand": "Blue Bottle"}).json()
 
         self.assertEqual(chat["answer"], "Grounded answer [1].")
@@ -75,8 +79,8 @@ class ApiSmokeTests(unittest.TestCase):
         missing = main.db.DatabaseConfigError("DATABASE_URL is not set")
 
         with patch.object(main.db, "connect", side_effect=missing):
-            stats = client.get("/api/stats")
-            reviews = client.get("/api/reviews")
+            stats = client.get("/api/stats?brand=Missing%20DB")
+            reviews = client.get("/api/reviews?brand=Missing%20DB")
             insights = client.get("/api/insights?brand=Missing%20DB&refresh=true")
             chat = client.post("/chat", json={"question": "What changed?", "brand": "Missing DB"})
 
@@ -105,7 +109,7 @@ class ApiSmokeTests(unittest.TestCase):
 
 
 
-class OnboardingValidationTests(unittest.TestCase):
+class OnboardingValidationTests(SignedIn, unittest.TestCase):
     """The website field is a URL the server will later fetch.
 
     An unvalidated value here is a server-side request forgery with the user
@@ -134,6 +138,8 @@ class OnboardingValidationTests(unittest.TestCase):
 
     def test_a_public_website_is_accepted_and_canonicalized(self) -> None:
         client = TestClient(main.app)
+        previous = main.accounts.set_store(MemoryStore())
+        self.addCleanup(main.accounts.set_store, previous)
         with patch.object(main.onboarding, "_persist_brand"), patch.object(
             main.onboarding, "start_async"
         ), patch.object(main.db, "database_url", return_value="postgres://x"):
@@ -164,7 +170,7 @@ class OnboardingValidationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
 
 
-class RequestBoundsTests(unittest.TestCase):
+class RequestBoundsTests(SignedIn, unittest.TestCase):
     """Without bounds, one request could fan out to hundreds of model calls."""
 
     def test_an_overlong_question_is_rejected_before_any_work(self) -> None:
@@ -201,7 +207,7 @@ class RequestBoundsTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
 
-class CollectionHealthTests(unittest.TestCase):
+class CollectionHealthTests(SignedIn, unittest.TestCase):
     def test_the_endpoint_returns_the_panel_payload(self) -> None:
         client = TestClient(main.app)
         payload = {
@@ -221,9 +227,39 @@ class CollectionHealthTests(unittest.TestCase):
         client = TestClient(main.app)
         with patch.object(main.db, "connection",
                           side_effect=main.db.DatabaseConfigError("DATABASE_URL is not set")):
-            response = client.get("/api/collection-health")
+            response = client.get("/api/collection-health?brand=B")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["setup_required"], "database")
+
+
+class EngineNoteTests(unittest.TestCase):
+    """"No runs recorded yet" must not be reported as "migration missing".
+
+    Found by running the dashboard against a real, fully migrated database:
+    the panel told the operator to run 002 because no run had recorded engine
+    metrics yet. A brand refreshed only by the worker never records them, so it
+    would have said so forever.
+    """
+
+    def _payload(self, columns_present: bool) -> dict:
+        from reviewbot.api import health
+
+        with patch.object(health, "_per_source", return_value=[]), patch.object(
+            health, "_last_successful", return_value=None
+        ), patch.object(health.runs, "get_run_detail", return_value=[]), patch.object(
+            health.runs, "_extended_available", return_value=columns_present
+        ), patch("reviewbot.sources.connector_statuses", return_value=[]):
+            return health.collection_health("Acme")
+
+    def test_columns_present_but_no_runs_yet_is_not_a_missing_migration(self) -> None:
+        payload = self._payload(columns_present=True)
+        self.assertNotIn("migration_required", payload)
+        self.assertIn("next collection", payload["engines_note"])
+
+    def test_missing_columns_still_asks_for_the_migration(self) -> None:
+        payload = self._payload(columns_present=False)
+        self.assertIn("migrate.py", payload["migration_required"])
+        self.assertNotIn("engines_note", payload)
 
 
 class FrontendEscapingTests(unittest.TestCase):

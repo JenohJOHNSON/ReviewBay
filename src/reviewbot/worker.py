@@ -31,6 +31,29 @@ def run_cycle() -> dict[str, int]:
         local += run_source(source, config=config)
     enriched = enrich()
     result = {"airbyte": airbyte, "local": local, "enriched": enriched}
+
+    # The QC pass sets `relevant`, and every dashboard, trend, compare, export and
+    # RAG query filters on `relevant IS NOT FALSE`. It was only ever wired into
+    # `ingestion.run.main()`, which nothing deploys, so on a real deployment the
+    # global pass never ran: rows stayed qc_checked = NULL and keyword collisions
+    # were never filtered out. Enrichment has to come first, because QC reads the
+    # enriched marts rows.
+    #
+    # It is safe to run unconditionally: it caps its own work (QC_MAX_ROWS), skips
+    # cleanly with no API key, and a failed batch leaves rows un-checked rather
+    # than mislabelled. Set WORKER_QC=0 to turn it off.
+    if os.environ.get("WORKER_QC", "1") != "0":
+        try:
+            from . import qc as _qc
+
+            verdicts = _qc.qc()
+            result["qc_checked"] = verdicts.get("checked", 0)
+            result["qc_irrelevant"] = verdicts.get("irrelevant", 0)
+        except db.DatabaseConfigError:
+            raise
+        except Exception:  # noqa: BLE001 - QC is best-effort, collection is not
+            log.exception("worker cycle: QC pass failed; rows stay un-checked")
+
     log.info("worker cycle complete: %s", result)
     return result
 

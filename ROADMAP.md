@@ -138,48 +138,120 @@ returns a ~200-character snippet with no author, rating or date.
 
 ---
 
-## Next priorities
+## Phase 8 - the follow-up list  (2026-10-20)  PARTLY DONE
 
-Ordered by value over effort. The first two are operational and need no code.
+Working the priorities above turned up four more problems, all on the background
+path rather than the request path, which is why the first audit missed them.
+Findings F19-F22 in [`docs/ARCHITECTURE_AUDIT.md`](docs/ARCHITECTURE_AUDIT.md).
 
-**1. Run the migration and turn on the password gate** (minutes, no code)
-`psql "$DATABASE_URL" -f postgres/002_scraping_engines.sql` unlocks per-engine
-metrics and the collection-health panel. Setting `AUTH_USER`/`AUTH_PASS` closes
-the enumerable `GET /api/reports/saved/{id}` endpoint. Both are called out in
-[`HANDOFF.md`](HANDOFF.md) section 8.
-
-**2. Decide the worker topology** (a deploy decision)
-`railway.json` builds only the API, so scheduled refresh, the Airbyte import and
-the global `qc()` pass do not run in production even though the docs describe a
-worker. Either deploy the worker service or stop documenting one.
-
-**3. Measure against a real brand** (half a day)
-The benchmarks are per page *class*, which is the honest way to measure
-extraction but says nothing about yield for a given brand. Onboard two or three
-real brands with the depth engine on and compare the collection-health panel
-against the pre-change numbers.
-
-**4. Browser tier on a worker** (half a day)
-The measured gap is client-rendered review pages, which currently yield zero.
-`requirements-scraping.txt` plus Chromium on the worker closes it. Keep it off
-the API image.
-
-**5. Per-user ownership** (the real fix for finding F11)
-Saved reports and the brand list are currently per-browser `localStorage` with no
-server-side ownership. A minimal account model would let the saved-report
-endpoint be scoped properly instead of relying on a shared password.
-
-**6. Site strategies for the domains that matter** (ongoing, cheap)
-`config/extraction_strategies.yml` is a config-only change. Add an entry when the
-collection-health panel shows a domain the generic extractors read badly.
-
-**7. Deferred from this engagement**
-In-process cache eviction for `insights._CACHE` / `report._CACHE`; teaching the
-legacy Trustpilot connector the robots.txt check the new engine does; and a
-`created_at` column type that would let the trend query stop parsing text dates.
+- [x] **The QC pass ran in neither deployed entrypoint** (F19, High). `qc()` sets
+      `relevant`, which every dashboard, trend, compare, export and RAG query
+      filters on. It was wired only into `ingestion.run.main()`, which nothing
+      deploys, so on a real deployment the pass never ran and every row stayed
+      `qc_checked = NULL`. It fails open, so there was no error to notice - just
+      a filter that never engaged. Now in `worker.run_cycle()`, after enrichment
+      because QC reads the enriched rows; `WORKER_QC=0` opts out.
+- [x] **Bounded the two in-process caches** (F20, Medium). `insights._CACHE` and
+      `report._CACHE` were dicts keyed by a query parameter, with TTL checked on
+      read and nothing ever removed - one permanent entry per distinct brand
+      string ever requested. Now `api/cache.py`, an LRU with real expiry.
+- [x] **Brought the Trustpilot connector inside both scraping gates** (F21,
+      Medium). It predates `reviewbot.scraping`, so it had no SSRF check on a URL
+      derived from user input and no robots.txt check, while sending a spoofed
+      Chrome user agent. **Behaviour change:** Trustpilot's robots.txt disallows
+      unrecognised crawlers, so it now declines rather than scraping. Use the
+      Apify actor source for Trustpilot data.
+- [x] **`scripts/migrate.py`** (F22, Low), so the schema step no longer needs
+      `psql` installed. Orders `ddl.sql` before the numbered files, records
+      checksums, one transaction per file, and refuses DROP/TRUNCATE/DELETE and
+      type changes before it even opens a connection.
+- [x] **`railway.worker.json`** plus a Railway section in
+      [`DEPLOY.md`](DEPLOY.md), so running both services is a documented
+      two-service setup rather than a gap.
+- [x] Tests: 332 to **399** (plus 143 subtests). Benchmark output unchanged.
 
 ---
 
-Recommended order: the operational items (1 and 2) first, since they are
-configuration rather than code. Everything after that is additive, and safe to do
-one item at a time.
+## Phase 9 - Accounts and the free-model fallback  (2026-10-20)  DONE
+
+Asked for directly: accounts, brands that stay in the account, delete, re-run,
+and OpenRouter free models when tokens run out. This also settled the open
+ownership question (priority 5 of the previous list) in favour of real accounts.
+
+- [x] **Accounts**: sign up, sign in, sign out; scrypt password hashes; hashed
+      session tokens in HttpOnly cookies; per-client and per-address rate limits;
+      cross-site write protection; invite-only or closed signup; admin list.
+- [x] **Brands belong to accounts**, in a Postgres registry that the worker now
+      refreshes (audit F23: the old YAML file lived on a disk Railway wipes).
+      One canonical spelling per brand (F24).
+- [x] **My brands** page with **Re-run search** (single-flight, cooldown) and
+      **Delete** (keeps the reviews; stops refresh when nobody tracks it). Re-run
+      on the dashboard too. Import of pre-account browser brand lists.
+- [x] **Saved reports owned** by their account (F11 closed).
+- [x] **One LLM gateway** for chat, report, QC and extraction, falling back from
+      OpenAI to OpenRouter free models with per-model cooldowns. Embeddings fall
+      back only to the same model; chat retrieval falls back to full-text search.
+- [x] **No paid AI required** (F30): reviews that cannot be embedded are saved
+      without a vector and shown at once; a later pass adds the vector, and chat
+      reaches those reviews by keyword meanwhile.
+- [x] `/api/alerts/test` limited to admins (F25).
+- [x] Verified on a real PostgreSQL 16 + pgvector and in real Chrome; the run
+      found and fixed F28.
+
+---
+
+## Next priorities
+
+**1. Migrate, then deploy** (minutes, no code)
+
+```
+python scripts/migrate.py --dry-run   # see the plan
+python scripts/migrate.py             # applies 003 (accounts) and 004 (search index)
+```
+
+Then set `ADMIN_EMAILS` to your address and decide who may register:
+`SIGNUP_INVITE_CODE` for invite-only, or `SIGNUP_ENABLED=0` once your accounts
+exist. Every tracked brand is scraped on a schedule, so open signup on a public
+URL is an open tab on the scraping bill. If the code is deployed first, sign-up
+says which command to run rather than failing.
+
+**2. Create the worker service** (minutes, a deploy decision)
+Either add a second Railway service pointed at `railway.worker.json`, or schedule
+`RUN_ONCE=1 python -m reviewbot.worker` externally. The worker now refreshes
+every brand any account tracks, from the database registry.
+
+**3. Turn on OpenRouter** (minutes)
+Create a key, set `OPENROUTER_API_KEY`, and check `GET /api/llm/status`. Run with
+`LLM_PRIMARY=openrouter` for a day to judge free-model answer quality before
+relying on it. If every free model fails with a data-policy error, see the
+account's privacy settings (https://openrouter.ai/settings/privacy).
+
+**4. Password reset and account deletion** (a day, needs an email sender)
+A forgotten password currently means a new account. Both flows need outbound
+email, which this deployment does not have; the SMTP settings used for alerts
+are the obvious place to start.
+
+**5. Measure against a real brand** (half a day)
+Still open from the previous list. The benchmarks are per page class; real yield
+per brand is unmeasured.
+
+**6. Browser tier on a worker** (half a day)
+`docker build --build-arg WITH_BROWSER=1 -f docker/worker.Dockerfile .` closes
+the one measured zero (client-rendered review pages). Keep it off the API image.
+
+**7. Site strategies** (ongoing, cheap)
+`config/extraction_strategies.yml`, when the collection-health panel shows a
+domain the generic extractors read badly.
+
+**8. Still deferred**
+- Merging reviews already stored twice under two spellings of one brand (F24).
+  It rewrites ids and deletes copies, so it wants a reviewed, explicit
+  migration, not a side effect.
+- A typed `created_at` column so the trend query stops parsing text dates.
+  Additive column plus backfill; measure the current cost first, which is now
+  possible with a local Postgres (see HANDOFF's gotchas).
+
+---
+
+Recommended order: 1 before anything else (the app requires accounts now), then
+2 and 3, which are configuration. Everything after that is additive.

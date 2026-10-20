@@ -15,6 +15,13 @@ than a bar that moves on a timer. The phase list is fixed and published as
 **The website field is the SSRF entry point.** It is a URL from an untrusted
 user that the server will later fetch, so it is validated here, at the boundary,
 before it is ever persisted — see `reviewbot.scraping.urlpolicy`.
+
+**One collection per brand at a time.** Jobs are keyed by the brand's registry
+key (trimmed, lowercased), and claiming a job is a check-and-set under a lock.
+Before accounts, two people adding "nike" and "Nike" started two concurrent
+scrapes of the same brand with two progress records; now the second request
+attaches to the first. Re-runs are additionally held to RERUN_COOLDOWN_SECONDS,
+so a re-run button (or delete-then-re-add) cannot be used to hammer the scrapers.
 """
 
 from __future__ import annotations
@@ -26,7 +33,7 @@ import time
 
 import yaml
 
-from .. import db
+from .. import accounts, db
 from ..ingestion.collect import FREE_PLAN, collect_until
 from ..ingestion.run import CONFIG_PATH, DYNAMIC_CONFIG
 from ..scraping import urlpolicy
@@ -55,10 +62,18 @@ PHASES: tuple[tuple[str, str], ...] = (
 )
 PHASE_LABELS = dict(PHASES)
 
-# In-memory progress for the "collecting…" screen. Fine for the single-process
-# API; swap for a shared store if this ever runs multi-worker.
+# In-memory progress for the "collecting…" screen, keyed by brand key. Fine for
+# the single-process API; swap for a shared store if this ever runs multi-worker.
 _JOBS: dict[str, dict] = {}
 _LOCK = threading.Lock()
+# Serializes read-modify-write of brands.dynamic.yml. Two onboards finishing
+# together used to both read the file, each append its brand, and the second
+# write dropped the first.
+_FILE_LOCK = threading.Lock()
+
+#: Minimum gap between collections of one brand started by a re-run (or by
+#: adding a brand someone collected moments ago). 0 disables the cooldown.
+RERUN_COOLDOWN_SECONDS = int(os.environ.get("RERUN_COOLDOWN_SECONDS", "300"))
 #: Keep the job map from growing for the life of the process.
 _MAX_JOBS = int(os.environ.get("ONBOARD_JOB_HISTORY", "64"))
 
@@ -121,22 +136,18 @@ def list_brands() -> list[str]:
     return names
 
 
-def _persist_brand(brand_cfg: dict) -> None:
-    """Append the brand to the dynamic (machine-managed) config file."""
-    doc = {"brands": []}
-    if os.path.exists(DYNAMIC_CONFIG):
-        try:
-            with open(DYNAMIC_CONFIG) as fh:
-                doc = yaml.safe_load(fh) or {"brands": []}
-        except Exception:  # noqa: BLE001
-            log.exception("could not read %s — recreating", DYNAMIC_CONFIG)
-            doc = {"brands": []}
-    brands = doc.get("brands") or []
-    key = _norm(brand_cfg["name"]).lower()
-    if any(_norm(b.get("name", "")).lower() == key for b in brands):
-        return  # already tracked
-    brands.append(brand_cfg)
-    doc["brands"] = brands
+def _read_dynamic() -> dict:
+    if not os.path.exists(DYNAMIC_CONFIG):
+        return {"brands": []}
+    try:
+        with open(DYNAMIC_CONFIG) as fh:
+            return yaml.safe_load(fh) or {"brands": []}
+    except Exception:  # noqa: BLE001
+        log.exception("could not read %s — recreating", DYNAMIC_CONFIG)
+        return {"brands": []}
+
+
+def _write_dynamic(doc: dict) -> None:
     os.makedirs(os.path.dirname(DYNAMIC_CONFIG), exist_ok=True)
     tmp = DYNAMIC_CONFIG + ".tmp"
     with open(tmp, "w") as fh:
@@ -145,13 +156,58 @@ def _persist_brand(brand_cfg: dict) -> None:
     os.replace(tmp, DYNAMIC_CONFIG)
 
 
+def _persist_brand(brand_cfg: dict) -> None:
+    """Append the brand to the dynamic (machine-managed) config file.
+
+    With a database the registry in `app.brands` is the source of truth and this
+    file is a convenience copy for setups without one; on a deploy whose disk is
+    ephemeral it is simply lost, which no longer matters.
+    """
+    try:
+        with _FILE_LOCK:
+            doc = _read_dynamic()
+            brands = doc.get("brands") or []
+            key = accounts.brand_key(brand_cfg["name"])
+            if any(accounts.brand_key(b.get("name", "")) == key for b in brands):
+                return  # already tracked
+            brands.append(brand_cfg)
+            doc["brands"] = brands
+            _write_dynamic(doc)
+    except OSError:
+        # A read-only config directory must not fail an onboard that the
+        # database has already recorded.
+        log.warning("could not write %s; relying on the database registry", DYNAMIC_CONFIG)
+
+
+def forget_brand(name: str) -> bool:
+    """Remove a brand from the dynamic config file, so the worker's YAML path
+    stops refreshing it too. Returns whether it was there."""
+    key = accounts.brand_key(name)
+    try:
+        with _FILE_LOCK:
+            doc = _read_dynamic()
+            brands = doc.get("brands") or []
+            kept = [b for b in brands if accounts.brand_key(b.get("name", "")) != key]
+            if len(kept) == len(brands):
+                return False
+            doc["brands"] = kept
+            _write_dynamic(doc)
+            return True
+    except OSError:
+        log.warning("could not update %s while removing %s", DYNAMIC_CONFIG, name)
+        return False
+
+
 #: Longest brand name we will accept. Long enough for any real brand, short
 #: enough that it cannot be used to bloat the config file or a query.
 MAX_BRAND_NAME = 120
 
 
-def add_brand(name: str, website: str | None = None, keywords: list[str] | None = None) -> dict:
-    name = _norm(name)
+def build_brand_config(
+    name: str, website: str | None = None, keywords: list[str] | None = None
+) -> dict:
+    """Validate an onboarding request into a brand config, persisting nothing."""
+    name = " ".join(_norm(name).split())
     if not name:
         raise ValueError("brand name is required")
     if len(name) > MAX_BRAND_NAME:
@@ -165,6 +221,12 @@ def add_brand(name: str, website: str | None = None, keywords: list[str] | None 
     validated = normalize_website(website)  # raises InvalidWebsite on a bad URL
     if validated:
         brand_cfg["website"] = validated
+    return brand_cfg
+
+
+def add_brand(name: str, website: str | None = None, keywords: list[str] | None = None) -> dict:
+    """Validate and persist to the YAML file (the no-database path)."""
+    brand_cfg = build_brand_config(name, website, keywords)
     _persist_brand(brand_cfg)
     return brand_cfg
 
@@ -172,7 +234,8 @@ def add_brand(name: str, website: str | None = None, keywords: list[str] | None 
 def _set(name: str, **fields) -> None:
     with _LOCK:
         job = _JOBS.setdefault(
-            name, {"status": "collecting", "phase": "queued", "collected": 0, "sources": {}}
+            accounts.brand_key(name),
+            {"status": "collecting", "phase": "queued", "collected": 0, "sources": {}},
         )
         job.update(fields)
 
@@ -190,25 +253,87 @@ def _trim_jobs() -> None:
             _JOBS.pop(key, None)
 
 
-def start_collection(brand_cfg: dict) -> None:
+def _fresh_job(name: str) -> dict:
+    return {
+        "status": "collecting",
+        "phase": "queued",
+        "brand": name,
+        "collected": 0,
+        "collected_new": 0,
+        "sources": {},
+        "started_at": time.time(),
+    }
+
+
+def _claim(name: str) -> bool:
+    """Atomically reserve the brand's job slot. False if one is already running."""
+    key = accounts.brand_key(name)
+    with _LOCK:
+        job = _JOBS.get(key)
+        if job and job.get("status") == "collecting":
+            return False
+        _JOBS[key] = _fresh_job(name)
+    _trim_jobs()
+    return True
+
+
+def is_running(name: str) -> bool:
+    with _LOCK:
+        job = _JOBS.get(accounts.brand_key(name))
+        return bool(job and job.get("status") == "collecting")
+
+
+def seconds_since_collection(name: str) -> float | None:
+    """How long ago this brand was last collected or re-run, if known.
+
+    Combines this process's job history with the registry's durable timestamps,
+    so the cooldown survives a restart.
+    """
+    now = time.time()
+    seen: list[float] = []
+    with _LOCK:
+        job = _JOBS.get(accounts.brand_key(name))
+        if job:
+            for field in ("finished_at", "started_at"):
+                if job.get(field):
+                    seen.append(now - float(job[field]))
+    try:
+        entry = accounts.get_brand(name)
+    except Exception:  # noqa: BLE001 - no database, or no migration: memory only
+        entry = None
+    if entry:
+        for field in ("last_collected_at", "last_rerun_at"):
+            stamp = entry.get(field)
+            if stamp is not None and hasattr(stamp, "timestamp"):
+                seen.append(now - stamp.timestamp())
+    return min(seen) if seen else None
+
+
+def cooldown_remaining(name: str) -> int:
+    """Seconds until this brand may be collected again; 0 when it may."""
+    if RERUN_COOLDOWN_SECONDS <= 0:
+        return 0
+    since = seconds_since_collection(name)
+    if since is None:
+        return 0
+    return max(0, int(RERUN_COOLDOWN_SECONDS - since + 0.999))
+
+
+def start_collection(brand_cfg: dict, _claimed: bool = False) -> None:
     """Background job: scrape the brand, enrich, updating progress as it goes."""
     name = brand_cfg["name"]
-    started = time.time()
+    key = accounts.brand_key(name)
+    if not _claimed:
+        with _LOCK:
+            _JOBS[key] = _fresh_job(name)
+        _trim_jobs()
     with _LOCK:
-        _JOBS[name] = {
-            "status": "collecting",
-            "phase": "queued",
-            "collected": 0,
-            "collected_new": 0,
-            "sources": {},
-            "started_at": started,
-        }
-    _trim_jobs()
+        started = _JOBS[key].get("started_at") or time.time()
 
     def _progress(source: str, written: int, total: int) -> None:
         with _LOCK:
             job = _JOBS.setdefault(
-                name, {"status": "collecting", "collected": 0, "sources": {}}
+                key, {"status": "collecting", "collected": 0, "sources": {}}
             )
             sources = job.setdefault("sources", {})
             # Accumulate: a source can report more than once across stages, and
@@ -291,6 +416,7 @@ def start_collection(brand_cfg: dict) -> None:
             finished_at=time.time(),
             duration_ms=int((time.time() - started) * 1000),
         )
+        _after_collection(name)
     except db.DatabaseConfigError as exc:
         log.warning("onboarding collection paused for %s: %s", name, exc)
         _set(name, status="error", phase="done", message=str(exc), finished_at=time.time())
@@ -307,13 +433,38 @@ def start_collection(brand_cfg: dict) -> None:
         _COLLECT_GATE.release()
 
 
-def start_async(brand_cfg: dict) -> None:
-    threading.Thread(target=start_collection, args=(brand_cfg,), daemon=True).start()
+def _after_collection(name: str) -> None:
+    """Make fresh data visible: stamp the registry and drop cached summaries.
+
+    Without the cache invalidation, a re-run would finish and the dashboard would
+    keep serving the pre-run insights and report for up to their TTL, which reads
+    as "re-run did nothing".
+    """
+    try:
+        accounts.mark_collected(name)
+    except Exception:  # noqa: BLE001 - no database or no migration 003
+        log.debug("onboarding: could not stamp last_collected_at for %s", name)
+    from . import insights, report
+
+    key = accounts.brand_key(name)
+    insights._CACHE.invalidate(key)
+    report._CACHE.invalidate(key)
+
+
+def start_async(brand_cfg: dict) -> bool:
+    """Start collecting in the background. False if this brand is already being
+    collected, in which case the caller should report that job's progress."""
+    if not _claim(brand_cfg["name"]):
+        return False
+    threading.Thread(
+        target=start_collection, args=(brand_cfg,), kwargs={"_claimed": True}, daemon=True
+    ).start()
+    return True
 
 
 def status(name: str) -> dict:
     with _LOCK:
-        job = _JOBS.get(_norm(name))
+        job = _JOBS.get(accounts.brand_key(name))
         if not job:
             return {
                 "status": "unknown",

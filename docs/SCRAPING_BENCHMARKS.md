@@ -233,7 +233,10 @@ Stated so the table is not read as claiming more than it does.
 | | Tests | Result |
 |---|---|---|
 | Before this work (commit `805de8f`) | 11 | 11 passed, 12.5s |
-| After | 332 (+141 subtests) | 332 passed, 86s |
+| After the extraction work | 332 (+141 subtests) | 332 passed, 86s |
+| After the follow-up list | 399 (+143 subtests) | 399 passed, 86s |
+| After accounts + OpenRouter | 526 (+194 subtests) | 526 passed, 107s; 32 more skipped without a database |
+| ...against real Postgres 16 + pgvector | 57 | contract (25 x 2 stores) + 7 end-to-end, all passed |
 
 Run with `pytest tests/ -q`. No database, network or API keys required: the
 scraping tests use the local fixture server and the model calls are stubbed.

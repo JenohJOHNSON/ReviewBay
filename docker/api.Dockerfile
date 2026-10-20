@@ -25,6 +25,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src/ ./src/
 COPY config/ ./config/
+# The migration runner, the SQL it applies, and the database copy script, so a
+# container can migrate (and, once, populate) its own database. A few KB.
+COPY scripts/migrate.py scripts/copy_database.py ./scripts/
+COPY postgres/ ./postgres/
 ENV PYTHONPATH=/app/src
 
 # Railway (and similar PaaS) inject $PORT and route the public URL to it. Fall

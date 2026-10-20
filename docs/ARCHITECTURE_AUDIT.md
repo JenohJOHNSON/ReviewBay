@@ -438,3 +438,210 @@ The pattern worth keeping: **the concurrency bug, the dead code path and the
 inverted limit were all found by running things, not by reading them.** The
 read-through found the data-correctness and security problems; execution found
 the ones where the code did something other than what it said.
+
+---
+
+## 6. Found while working the follow-up list
+
+A second pass over the deployment and lifecycle questions the first audit had
+deferred. These are not leftovers from the list above; they are things the first
+read missed because it followed the *request* path and these all live on the
+*background* path.
+
+### F19 — High — the QC pass runs in neither deployed entrypoint
+
+`qc()` sets `relevant`, and the dashboard, trends, compare, export and RAG
+retrieval all filter on `relevant IS NOT FALSE`. Two entrypoints exist:
+
+| Entrypoint | Deployed by | Runs `qc()`? |
+|---|---|---|
+| `reviewbot.worker` | `docker-compose.yml`, `railway.worker.json` | **no** |
+| `reviewbot.ingestion.run` | nothing | yes |
+
+So the entrypoint that runs the pass is the one nothing deploys. On any real
+deployment every row stayed `qc_checked = NULL`, which fails open — the rows
+still show — so the symptom was not an error but a filter that silently never
+engaged. Keyword collisions were never removed from anything.
+
+This compounds F1 (the critical cross-brand batching bug): the pass that was
+corrupting data when it ran was also not running where it mattered. Fixing F1
+without noticing F19 would have produced a correct pass that still never
+executed.
+
+Fixed: `worker.run_cycle()` now runs it after enrichment, which is the required
+order because QC reads the enriched `marts` rows. `WORKER_QC=0` opts out.
+
+### F20 — Medium — `insights._CACHE` and `report._CACHE` grew without bound
+
+Both were plain dicts keyed by brand with a stored timestamp, checked for expiry
+on read. That expires an entry logically and never removes it, so the dict only
+grew: one permanent entry per distinct brand string ever requested, each holding
+a full payload.
+
+The key comes from a query parameter. It is length-limited and validated, but
+valid is not *known* — any well-formed string that matches no brand still
+produces a cacheable payload and therefore a permanent entry. A slow
+request-driven memory leak rather than a crash, which is why nothing had noticed.
+
+Fixed: `api/cache.py`, a bounded LRU with real expiry. An LRU rather than a FIFO
+because the access pattern is a few brands read repeatedly, so bounding by
+recency keeps the entries actually serving traffic.
+
+### F21 — Medium — the Trustpilot connector was outside both scraping gates
+
+`connectors/playwright_source.py` predates `reviewbot.scraping`, and so predates
+the two gates every other fetch now passes through:
+
+* **No SSRF check.** Its URL comes from the brand's user-supplied `website`, or
+  from `TRUSTPILOT_URL_<BRAND>`, and went straight to a browser that will follow
+  it anywhere — including localhost and the cloud metadata endpoint. The
+  `urlpolicy` guard added for the new engines did not cover this path.
+* **No robots.txt check**, while sending a spoofed desktop-Chrome user agent.
+
+The second one matters beyond the single connector: the documentation says
+ReviewBay honours robots directives, and a second path that ignored them made
+that claim false rather than partial. A compliance posture with a back door is
+not a compliance posture.
+
+Fixed: both gates now apply, and the connector identifies itself as
+`ReviewBayBot`. **This is a behaviour change, stated plainly:** Trustpilot's
+robots.txt disallows unrecognised crawlers, so this connector now declines
+instead of scraping. That is the correct outcome. Trustpilot data through a path
+licensed to serve it is what the Apify actor source is for, and the log message
+says so, because otherwise the next person reads the skip as a breakage and
+removes the check.
+
+### F22 — Low — the schema step assumed a Postgres client
+
+Both migrations were documented as `psql "$DATABASE_URL" -f ...`. Reasonable on
+a server; awkward on a development machine that has the application's
+dependencies but no `psql` — which was the case in this environment, so the
+documented step could not be run at all.
+
+Fixed: `scripts/migrate.py` applies `postgres/*.sql` through the psycopg
+connection the app already depends on, ordering `ddl.sql` before the numbered
+files (sorting by filename alone puts `002` first and creates objects in schemas
+that do not exist yet). It records applied files with a checksum, runs each in
+one transaction, and **refuses destructive SQL** — DROP, TRUNCATE, DELETE and
+type-altering ALTERs abort the run before a connection is even opened, with
+`--allow-destructive` as the deliberate override. No migration in this
+repository needs it.
+
+**Update (accounts round):** the SQL is now verified. A throwaway PostgreSQL 16
+with pgvector 0.6.2 (`pgserver`, pip-installable, running locally) applied
+`ddl.sql`, `002`, and the new `003` and `004` through the runner, and re-applied
+all four with `--force` to prove idempotency.
+
+---
+
+## 7. Found while building accounts and the free-model fallback
+
+With a real database available for the first time in this engagement, the
+account work was verified end to end, and that verification found problems
+the earlier reads and fake-connection tests could not.
+
+### F11 — closed
+
+Saved reports now belong to the account that saved them
+(`marts.saved_reports.owner_id`, migration 003). "Not yours" and "does not
+exist" are the same 404, so ids cannot be probed. Share links (`/r/<token>`) stay
+public by design. Rows saved before accounts have no owner and are visible only
+to `ADMIN_EMAILS`.
+
+### F23 — High — brands added through the website were stored on a disposable disk
+
+Onboarding wrote new brands to `config/brands.dynamic.yml` on the API
+container's local filesystem, and the worker read the same path. On Railway that
+disk is wiped on every redeploy and is not shared with a separately deployed
+worker, so a brand added through the website was never refreshed by a worker
+there, and was forgotten entirely by the next deploy. The browser-side brand
+list (localStorage) masked this: the brand still appeared, on that one browser.
+
+Fixed: a brand registry in Postgres (`app.brands`, `app.user_brands`). The
+worker's `_load_config()` merges it in, and drops YAML brands the registry marks
+inactive. Verified against real Postgres: a brand added over HTTP appears in
+the worker's config with no YAML file present.
+
+### F24 — Medium — two spellings of one brand stored every review twice
+
+`models.stable_id` hashes the brand name case-sensitively, so "nike" and "Nike"
+produce different ids for the same review and both rows are kept. Every
+dashboard query matches brands case-insensitively, so both copies were counted.
+Before accounts this needed one person to type a brand two ways; with accounts,
+two people typing it differently is the normal case.
+
+Fixed going forward: the registry keys brands by lowercased name and the first
+spelling is canonical for everyone, so collection always uses one spelling.
+**Not fixed:** duplicates already stored under two spellings. Merging them is a
+destructive data migration (rewrite ids, drop the copies) and is listed as
+deferred rather than done quietly.
+
+### F25 — Medium — any visitor could post to the operator's alert channel
+
+`POST /api/alerts/test` sends a real message to the configured Slack/Discord
+webhook or inbox. Behind a single shared password that was the operator testing
+their setup; with open signup it is a way for anyone to post into the
+operator's channel. Now limited to `ADMIN_EMAILS`.
+
+### F26 — Medium — chat stopped at retrieval when embeddings were unavailable
+
+Generation had a fallback (an extractive answer), but retrieval did not: an
+exhausted OpenAI quota failed the question's embedding first, so the chat
+returned "could not search" and the generation fallback never ran. Now
+retrieval falls back to Postgres full-text search (`004_keyword_search.sql`
+adds the GIN index), and then to the most recent reviews. Answers say which
+happened, and keyword results never claim High confidence. Verified against
+real Postgres with no model key of any kind: the chat answered with the right
+review and a working citation.
+
+### F27 — Low — the onboarding form proceeded after a refused add
+
+When `POST /api/brands` answered 400 (a website the SSRF guard refuses), the
+page still switched to the progress screen and polled a job that was never
+started. It now shows the server's reason under the form.
+
+### F28 — Low — the health panel asked migrated databases to run the migration
+
+Found only by rendering the dashboard against a real, fully migrated database.
+The panel printed "run the migration" whenever no run had recorded engine
+metrics — a different condition. Brands refreshed only by the worker never
+record them, so the panel would have said it forever. Separately, the column
+probe cached a negative answer for the life of the process, so an API started
+before the migration kept saying it after the migration ran. Both fixed, and
+both regression-tested (the second with a counted, time-travelled probe).
+
+### F29 — Medium — an empty OpenAI account was mistaken for a rate limit
+
+Found in production, in the logs of the first chat after the database move. The
+error was a 429 with type `insufficient_quota` but code
+`credit_balance_exhausted`; `llm.classify()` matched only the older code, so it
+labelled the account "rate limited". The gateway would then have retried OpenAI
+on a short backoff instead of setting it aside for 30 minutes, and the
+embeddings path, whose retry check had the same gap, retried it four times per
+chunk on top of the SDK's own two retries: twelve requests and ~8 seconds before
+falling back. One shared `llm.is_out_of_credit()` now also reads the error's
+`type` and known codes and phrases; the embeddings client no longer adds SDK
+retries on top of its own backoff loop. Regression-tested with the verbatim
+production error, and the committed classifier was confirmed to fail that test.
+
+### F30 — High — new reviews needed a paid embeddings provider to appear at all
+
+Found while checking what "OpenRouter instead of OpenAI" still lacked.
+Enrichment skipped any batch it could not embed and left it pending in
+raw.reviews_raw, so with the OpenAI account empty a newly searched brand
+(PRIVEEL CUSTOM PEPTIDES, 85 reviews collected) showed 0 reviews on every page,
+although nothing on the dashboard uses the vector. No free configuration could
+fix it: another model's vectors live in a different space, so free OpenRouter
+embedding models cannot be used for this database. Reviews that cannot be
+embedded are now saved with `embedding` NULL and given a vector by a later pass;
+vector search skips them, and chat reaches them by keyword when vector search
+comes back short. Tested in unit tests, against real Postgres, and in Chrome
+with no AI keys.
+
+### Deployment ordering, handled rather than documented
+
+With accounts, every page requires sign-in, and sign-in needs migration 003.
+Deploying the code before migrating used to be a bare 500 on sign-up. The app
+now detects the missing tables (SQLSTATE 42P01, checked against the error real
+Postgres raises) and answers with the command to run; the sign-in page shows it
+before anyone types.

@@ -20,14 +20,14 @@ and a local-ML review summary. See `README.md` for the full description.
 
 | Layer | Choice | Notes |
 |-------|--------|-------|
-| Storage | Neon Postgres + pgvector | `raw.reviews_raw`, `marts.reviews` (vector(768), HNSW cosine) |
+| Storage | Railway Postgres + pgvector (moved from Neon 2026-10-20) | `raw.reviews_raw`, `marts.reviews` (vector(768), HNSW cosine) |
 | Embeddings | OpenAI `text-embedding-3-small` (768-dim) | API call; local fastembed removed (it OOM/crashed the cloud container) |
 | Sentiment | vaderSentiment | local |
 | Chat | OpenAI Responses API, `gpt-4o-mini` by default | extractive fallback |
 | Insights | scikit-learn (TF-IDF + KMeans) | no LLM, deterministic |
 | Web search | Tavily (preferred) or Apify google-search | `web` source |
 | Deep scrape | Firecrawl | opt-in per brand |
-| Trustpilot | Playwright + Selectolax (self-hosted) | opt-in; no per-page fee; needs chromium |
+| Trustpilot | Playwright + Selectolax (self-hosted) | opt-in, but **declines**: robots.txt disallows us. Use the Apify actor |
 | App reviews | Apple RSS + google-play-scraper | free |
 | Other sites | Apify actors | Google Maps / Yelp / TripAdvisor / IG / FB |
 | **Depth extraction** | **Scrapling 0.5** | base install is the lxml parser only, no browser. Reads the pages web search finds. On by default |
@@ -99,6 +99,171 @@ Database schema (once): `psql "$DATABASE_URL" -f postgres/ddl.sql`.
   missing credential turns the source off instead of crashing the run.
 
 ## 7. Recent work (most recent first)
+
+### 2026-10-20 (late night) - new reviews no longer wait on an embeddings provider
+
+- **The problem:** PRIVEEL CUSTOM PEPTIDES showed 0 reviews because enrichment
+  skipped any batch it could not embed, and the OpenAI account was empty. So the
+  site could not run on free models alone: OpenRouter's free models cannot embed
+  for this database, and every new review needed OpenAI (or OpenRouter credit)
+  before it appeared anywhere.
+- **Now:** a batch that cannot be embedded is saved without a vector
+  (`embedding` NULL; sentiment is local, so the dashboard is complete). After
+  the first such failure the rest of the pass does not ask again. Each pass then
+  fills in missing vectors (`enrich.run.backfill`: at most 10 batches a pass,
+  paging by id so a refused batch is stepped over), only when a provider can
+  embed and only while the review's text is unchanged.
+- **Chat:** vector search ranks only reviews that have a vector. When it returns
+  fewer than `RAG_TOP_K`, the remaining places go to reviews without one, found
+  by keyword; the answer says so and is never graded High.
+- **Verified:** 21 new tests (12 for enrichment and back-fill, 5 for chat
+  retrieval, 4 against real Postgres); 16 of the 17 new unit tests fail against
+  the old code. Full suite with Postgres: 607 passed. In Chrome, against real
+  Postgres with no AI keys at all, a brand search reached the dashboard (5
+  reviews, ratings, sentiment) and chat answered from a review with no vector,
+  with the note shown.
+- **Net effect:** the branch runs on free models alone. Chat and reports use
+  free OpenRouter models, the dashboard is complete, and chat searches by
+  keyword until an embeddings provider is available again.
+
+### 2026-10-20 (night) - the database moved from Neon to Railway
+
+- **New database:** Railway's pgvector template (`pgvector/pgvector:pg18`,
+  PostgreSQL 18.6) in project `laudable-fulfillment`, region `sfo` (same as the
+  app), 5 GB volume. Railway's standard Postgres template has no extensions,
+  hence this one. Railway generated the password; it never left Railway.
+- **Migrated and copied** by a temporary service (`db-setup`) built from the
+  branch at commit e07f799: all four migrations applied, then
+  `scripts/copy_database.py` copied 9,546 raw reviews, 6,206 enriched reviews
+  (with embeddings), 2 scrape runs and 2 saved reports from Neon in about 15
+  seconds. Both connection strings were Railway references; neither was seen.
+- **Switched** `ReviewBay`'s `DATABASE_URL` to `${{pgvector.DATABASE_URL_PRIVATE}}`
+  (private network). The live site was verified afterwards: `/readyz` ok, both
+  runs present, Blue Bottle Coffee's 172 reviews served from the new database.
+- **Rollback:** Railway's rollback on the previous ReviewBay deployment restores
+  its variables too, which puts the Neon connection back. Neon itself was only
+  ever read, so it is exactly as it was.
+- Neon had **never had migration 002 applied**; the copy filled the engine
+  metric columns with their defaults, and the new database has all of 002-004.
+
+**Found in production while verifying:**
+
+- **The OpenAI account is out of credits** (`429`, type `insufficient_quota`,
+  code `credit_balance_exhausted`). That is why chat answered "could not search"
+  (the code on `main` has no retrieval fallback) and why PRIVEEL CUSTOM PEPTIDES
+  shows 0 reviews: its 85 were collected but never enriched, because enrichment
+  needs embeddings. They are in `raw.reviews_raw`, waiting.
+- **A bug in the new fallback code (F29):** `llm.classify()` recognised only the
+  older `insufficient_quota` code, so this newer error was taken for a short rate
+  limit and OpenAI would have been retried every minute or so instead of set
+  aside for 30 minutes; the embeddings path retried it twelve times per chunk.
+  Fixed with one shared `llm.is_out_of_credit()` that also reads the error's
+  `type`, tested against the exact production error body.
+
+
+### 2026-10-20 (evening) - accounts, brand management, OpenRouter fallback
+
+What was asked for: create an account; a searched brand stays in the account;
+delete a brand; re-run a brand's search; switch to free models via OpenRouter
+when tokens run out. All five are built and verified end to end in Chrome.
+
+**Accounts** (`accounts.py`, `api/auth.py`, migration 003)
+
+- Email and password, hashed with stdlib scrypt (no new dependency), with
+  constant-time verification and timing-equalized "no such user". Sessions are
+  a random token in an HttpOnly, SameSite=Lax cookie (Secure behind HTTPS);
+  only the token's SHA-256 is stored.
+- Every page except the landing page, sign-in, health checks, static assets and
+  shared-report links requires an account. Pages redirect to
+  `/login?next=...`; the API answers 401.
+- Sign-in and sign-up are rate limited per client and per address; a
+  state-changing request whose Origin/Referer names another site is refused
+  (login CSRF included). `SIGNUP_INVITE_CODE` / `SIGNUP_ENABLED` control who can
+  register, `ADMIN_EMAILS` who can do operator actions.
+- Persistence is behind a small `Store` seam. One contract suite runs against
+  an in-memory store AND real Postgres, so the fake used by the default test
+  suite cannot drift from the production SQL.
+
+**Brands belong to accounts** (`app.brands`, `app.user_brands`)
+
+- A searched brand is recorded on the account before collection starts: the
+  same list from any browser, after any deploy. The brand registry is also what
+  the worker now refreshes (audit F23: the old YAML file lived on a disk Railway
+  wipes).
+- The first spelling of a brand is canonical for everyone, so "nike" and "Nike"
+  no longer collect the same reviews twice (F24).
+- Every brand-scoped endpoint checks the brand is in the signed-in account; an
+  omitted brand is a 400 instead of "every brand in the database". Chat's "All
+  my brands" means exactly this account's brands.
+- **My brands** (`/brands`): review counts, last collection, Re-run and Delete.
+  Delete removes the brand from your account and keeps its reviews (others may
+  track it; re-adding is instant); when nobody tracks it any more, scheduled
+  refresh stops. Re-run uses the onboarding pipeline, never starts a second
+  collection of a brand already being collected, and is held to
+  `RERUN_COOLDOWN_SECONDS`. The dashboard has a Re-run button too.
+- Brands this browser remembered before accounts are offered for import.
+- Saved reports belong to their owner (F11 closed).
+
+**OpenRouter** (`llm.py`)
+
+- All four LLM call sites (chat, report, QC, AI extraction) go through one
+  gateway: OpenAI exactly as before, then each `OPENROUTER_MODELS` entry in
+  order. Quota, credit and key failures set a provider aside for 30 minutes; a
+  rate limit sets one model aside for its Retry-After; the free tier's daily cap
+  sets aside all of OpenRouter. The default list ends with `openrouter/free`,
+  OpenRouter's router over whatever free models exist that day.
+- `OPENROUTER_TASKS` defaults to chat and report: a free account gets 50
+  free-model requests a day and one QC pass can use 24.
+- Embeddings fall back ONLY to the same model through OpenRouter (billed);
+  when nothing can embed, chat retrieval falls back to Postgres full-text
+  search (migration 004, F26). Answers say which model wrote them, and say
+  plainly when they are quoted or keyword-matched.
+- Classification is tested against the OpenAI SDK's real exception classes.
+
+**Verified** with a real PostgreSQL 16 + pgvector (pgserver, local, throwaway):
+all four migrations apply and re-apply; 25 contract tests x 2 backends; 7
+end-to-end HTTP tests on real SQL; and a 14-step walkthrough in real Chrome
+(sign up, add a brand, see it from a second browser, cooldown, dashboard, chat
+with no model at all, delete, sign out, phone width) with zero page errors.
+That run also found F28, the health panel misreporting the migration.
+
+
+### 2026-10-20 (later the same day) - the follow-up list
+
+Working the next-priorities list surfaced four more problems, all on the
+**background** path rather than the request path, which is why the first audit
+read missed them. Findings F19-F22 in
+[`docs/ARCHITECTURE_AUDIT.md`](docs/ARCHITECTURE_AUDIT.md).
+
+- **The QC pass ran in neither deployed entrypoint.** `qc()` sets `relevant`,
+  which the dashboard, trends, compare, export and RAG retrieval all filter on.
+  It was wired only into `ingestion.run.main()`, which nothing deploys;
+  `reviewbot.worker` - what compose and Railway actually start - did the Airbyte
+  import, local sources and enrichment, then stopped. The filter fails open, so
+  there was no error, just a QC pass that never engaged on any real deployment.
+  Now in `worker.run_cycle()` after enrichment (QC reads the enriched rows), with
+  `WORKER_QC=0` to opt out. `qc()` also now skips cleanly with no
+  `OPENAI_API_KEY` instead of logging a traceback for each of ~24 batches.
+- **The two in-process caches were unbounded.** `insights._CACHE` and
+  `report._CACHE` were dicts keyed by the `brand` query parameter, expiry checked
+  on read and nothing ever deleted. Valid is not known: any well-formed string
+  that matches no brand still produced a cacheable payload and a permanent entry.
+  Replaced with `api/cache.py`, a bounded LRU with real expiry.
+- **The Trustpilot connector sat outside both scraping gates.** It predates
+  `reviewbot.scraping`: no SSRF check on a URL built from the user-supplied
+  `website` or `TRUSTPILOT_URL_<BRAND>` and handed to a browser, and no robots.txt
+  check, while sending a spoofed desktop-Chrome user agent. Both gates now apply
+  and it identifies itself as `ReviewBayBot`. **Behaviour change** - see section 8.
+- **`scripts/migrate.py`**, because both migrations were documented as `psql ...`
+  and `psql` is not necessarily installed. Orders `ddl.sql` before the numbered
+  files, records checksums, one transaction per file, and refuses destructive SQL
+  before it opens a connection.
+- **`railway.worker.json`** and a Railway section in [`DEPLOY.md`](DEPLOY.md), so
+  the two-service topology is documented rather than implied.
+
+Tests 332 -> **399** (plus 143 subtests). Doctests, the frontend check and the
+benchmark all re-run; benchmark output is unchanged.
+
 
 ### 2026-10-20 - Scrapling + ScrapeGraphAI, and an audit-driven cleanup
 
@@ -248,31 +413,79 @@ API keys.
 
 ## 8. Pending / next steps
 
-### From the 2026-10-20 engagement
+### Do these first
 
-- [ ] **Run the migration** on the live database:
-      `psql "$DATABASE_URL" -f postgres/002_scraping_engines.sql`. Until then the
-      collection-health panel shows `migration_required` and per-engine metrics
-      are not recorded. Everything else works.
-- [ ] **Set `AUTH_USER` / `AUTH_PASS`** on any deployment holding real brands.
-      `GET /api/reports/saved/{id}` takes a sequential id and is protected only by
-      that gate, so without it saved reports are enumerable. Documented rather
-      than changed because fixing it properly needs a per-user ownership model,
-      which is a product decision.
-- [ ] **Decide the worker topology.** `railway.json` builds only the API, so the
-      worker loop - scheduled refresh, the Airbyte import, the global `qc()` pass
-      - does not run in production, though this file and the README describe one.
-      This predates the engagement; it needs a deploy decision, not a code change.
-- [ ] Optional: install `requirements-scraping.txt` plus Chromium **on a worker**
-      to enable the browser tier for client-rendered review pages. Do not put it
-      on the API image; a Chromium process is 150-300MB resident.
+- [ ] **OpenAI is out of credits.** On `main` (live), chat and enrichment stop
+      until credits are added at
+      https://platform.openai.com/settings/organization/billing/. The branch
+      does not need OpenAI: deployed with `OPENROUTER_API_KEY` set, chat and
+      reports run on free models, new reviews are saved without a search vector
+      (dashboard complete, chat finds them by keyword), and the vectors are
+      filled in once an embeddings provider is back (OpenAI credit, or
+      OpenRouter credit for the same model). After deploying, press Re-run on
+      PRIVEEL CUSTOM PEPTIDES: its 85 waiting reviews are saved in that run.
+- [ ] **Delete the `db-setup` service** in Railway once you are happy with the
+      move. Its job is done; it now just idles.
+- [ ] After merging the branch, check ReviewBay's Settings for the pre-deploy
+      command `python scripts/migrate.py`. `railway.json` declares it, but the
+      temporary service showed no sign of Railway applying that file's deploy
+      section, so set it in the dashboard if it is missing. (The database is
+      already fully migrated, so nothing depends on it today.)
+
+- [ ] **Run the migrations BEFORE (or right after) deploying this code.**
+      `python scripts/migrate.py --dry-run`, then `python scripts/migrate.py`.
+      It now applies 003 (accounts, brand registry, report owners) and 004 (the
+      keyword-search index) as well. Every page requires an account and accounts
+      need 003: until it runs, sign-up answers "run python scripts/migrate.py"
+      rather than working. Idempotent; refuses destructive SQL.
+- [ ] **Set `ADMIN_EMAILS`** to your own address, then create your account.
+      Admins can send a test alert and can see reports saved before accounts.
+- [ ] **Decide who can register.** Signup is open by default and every tracked
+      brand costs scraping money. On a public URL set `SIGNUP_INVITE_CODE`, or
+      `SIGNUP_ENABLED=0` once your accounts exist.
+- [ ] **Create the worker service, or schedule the cycle.** `railway.json` builds
+      only the API. Add a second Railway service with its config-as-code path set
+      to `railway.worker.json` (no healthcheck - it is a loop, not a server), or
+      run `RUN_ONCE=1 python -m reviewbot.worker` from an external scheduler.
+      Doing neither means collection never refreshes **and** the QC pass never
+      runs. `DEPLOY.md` has both options written out.
+
+### Also pending
+
+- [ ] **OpenRouter:** create a key at https://openrouter.ai/keys and set
+      `OPENROUTER_API_KEY`. If every free model fails with "No endpoints found
+      matching your data policy", the account's privacy settings
+      (https://openrouter.ai/settings/privacy) are refusing free endpoints; the
+      logs and `GET /api/llm/status` say so. `LLM_PRIMARY=openrouter` for a while
+      is the quickest way to see how the free models answer.
+- [ ] Existing users: their brands are in their browser's localStorage, and
+      My brands offers to import them after they sign up. Reports saved before
+      accounts have no owner and are visible to admins only.
+- [ ] Not built: password reset and account deletion. Both need an email
+      sender this deployment does not have.
+- [ ] Not fixed: reviews already stored twice under two spellings of one brand
+      (audit F24). Merging them is a destructive data migration.
+- [ ] Optional: build the worker with `--build-arg WITH_BROWSER=1` to enable the
+      browser tier for client-rendered review pages. Do not put it on the API
+      image; a Chromium process is 150-300MB resident.
 - [ ] Optional: `SCRAPEGRAPH_ENABLED=1` for brands whose reviews live in prose
       pages. Start with `SCRAPEGRAPH_MAX_COST_PER_RUN` low and watch the cost
       column in the collection-health panel.
-- [ ] Not done: in-process cache eviction for `insights._CACHE` and
-      `report._CACHE` (bounded in practice by brand count), and the legacy
-      Trustpilot connector still does not consult robots.txt the way the new
-      engine does.
+- [ ] Still deferred: a typed `created_at` column so the trend query stops
+      parsing text dates. It touches the database contract, so it wants an
+      additive column plus a backfill rather than a type change, and the cost is
+      worth measuring first - no live database was reachable to measure it.
+
+### Behaviour change to be aware of
+
+- **The Trustpilot/Playwright connector now declines.** It consults robots.txt
+  like every other fetch path, and Trustpilot's robots.txt disallows
+  unrecognised crawlers. If a brand lists `trustpilot` in its sources you will
+  see a WARNING naming the URL and saying to use the Apify actor source instead.
+  That is the check working, not a breakage. The connector was previously sending
+  a spoofed Chrome user agent, which is how a crawler evades rules written for
+  crawlers; the documentation claimed robots compliance throughout, so this path
+  made that claim false rather than partial.
 
 ### Earlier
 
@@ -307,8 +520,9 @@ API keys.
   AUTH_PASS gate) by design, so a share link opens a saved report without the app
   password. The token is unguessable and the data is public reviews, but be aware
   the link exposes that brand's report to anyone who has it.
-- `GET /api/reports/saved/{id}` is NOT exempt, but it takes a sequential
-  `bigserial`, so with the password gate off it is enumerable. Turn the gate on.
+- `GET /api/reports/saved/{id}` takes a sequential `bigserial`, so it must
+  only ever return the caller's own reports (`owner_id`), with one 404 for both
+  "not yours" and "does not exist". Before accounts it was enumerable.
 - Any brand filter written as `brand ILIKE %(brand)s` must pass the value through
   `db.like_param()`. Unescaped, `?brand=%` matches every brand in the database.
 - Scraped text reaching an LLM must be fenced with `prompting.fence_all()`, and
@@ -325,3 +539,31 @@ API keys.
   asserts that against the source. Do not enable them.
 - The inline frontend JS has no build step or linter. Run
   `python scripts/check_frontend_js.py` after editing a `<script>` block.
+- Every route is behind the login wall unless it is listed in
+  `api/auth.py`'s `_PUBLIC_*` sets, so a new route is protected by default. A new
+  brand-scoped endpoint must also pass its brand through `main._brand()`, which
+  checks membership and returns the canonical spelling.
+- Pages must load `account.js` before `brands.js`, and read the brand list only
+  after `await RB_Brands.ready()`.
+- Never point embeddings at a different model "as a fallback". Vectors from
+  another model live in another space, and search then returns confident
+  nonsense with no error anywhere. `embeddings.providers()` derives the
+  OpenRouter model from EMBED_MODEL on purpose.
+- LLM calls go through `llm.complete()`, never a new `OpenAI()` client: that is
+  what gives a call site the fallback, the cooldowns and `/api/llm/status`.
+- Real Postgres for tests: `pip install pgserver` in a scratch venv gives a
+  local Postgres 16 + pgvector; point `REVIEWBAY_TEST_DATABASE_URL` at a
+  database whose name contains "test" to run `test_accounts_contract.py` and
+  `test_postgres_e2e.py` against it (they truncate tables, hence the guard).
+- There are two worker entrypoints and only one is deployed. `reviewbot.worker`
+  is what `docker-compose.yml` and `railway.worker.json` start;
+  `reviewbot.ingestion.run` is a separate loop that nothing deploys. Work added
+  to the wrong one looks wired up and never runs - that is exactly how the QC
+  pass went missing. Put scheduled work in `worker.run_cycle()`.
+- Anything cached in process belongs in `api.cache.TTLCache`, not a dict. A dict
+  keyed by a request parameter with a TTL checked on read expires entries
+  logically and keeps them forever.
+- Any new connector that fetches a URL must pass `urlpolicy.check()` and
+  `robots.can_fetch()` first. Both gates live in `reviewbot.scraping` rather than
+  in the engine precisely so a second fetch path cannot quietly skip them, which
+  is what the Trustpilot connector did for as long as it predated them.

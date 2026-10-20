@@ -31,6 +31,13 @@ summary (no LLM, so it is fast and reproducible).
 - **Intelligence report.** A brand health score plus AI-synthesized recurring
   issues, purchase drivers, churn risks, and marketing angles, each cited.
 - **Compare.** Two brands side by side (sentiment, rating, volume, health).
+- **Accounts.** Brands you search stay in your account, from any browser and
+  across deploys. Re-run a brand's search, or delete it, from **My brands**.
+- **Keeps answering when tokens run out.** If OpenAI is out of quota, chat and
+  reports switch to free OpenRouter models; if no model is available at all,
+  chat still answers by keyword search and quotes the matching reviews, and says
+  plainly that it did. New reviews reach the dashboard even when nothing can
+  embed them: they are saved without a search vector, and a later run adds it.
 
 ---
 
@@ -148,7 +155,7 @@ spike memory at once. A scrape-run history table records every collection.
 | Layer | Choice |
 |-------|--------|
 | Language / API | Python, FastAPI, Uvicorn |
-| Storage | Neon Postgres + pgvector (`vector(768)`, HNSW cosine) |
+| Storage | Postgres + pgvector (`vector(768)`, HNSW cosine): Railway, or Neon |
 | Embeddings | OpenAI `text-embedding-3-small` (768-d) |
 | Chat | OpenAI Responses API (RAG), extractive fallback |
 | Sentiment | vaderSentiment (local) |
@@ -158,7 +165,7 @@ spike memory at once. A scrape-run history table records every collection.
 | Scraping (AI fallback) | **ScrapeGraphAI** (opt-in) or a built-in OpenAI backend; verbatim-verified, budget-capped |
 | Scraping (paid, last resort) | Firecrawl, Apify actors |
 | Packaging | Docker, docker-compose |
-| Hosting | Railway (API), Neon (DB) |
+| Hosting | Railway (API and the pgvector database) |
 
 ---
 
@@ -170,7 +177,7 @@ Sources are grouped into categories so the dashboard stays readable
 | Category | Sources | Cost |
 |----------|---------|------|
 | App Reviews | app_store, google_play | Free (Apple RSS + google-play-scraper) |
-| Review Sites | trustpilot, google_maps, yelp, tripadvisor | Trustpilot opt-in self-hosted (Playwright); rest via Apify |
+| Review Sites | trustpilot, google_maps, yelp, tripadvisor | via Apify (the self-hosted Trustpilot path now declines on robots.txt) |
 | Social | reddit, mastodon, hackernews, twitter, linkedin, instagram, facebook, youtube | Free via web tagging/direct open APIs; IG/FB via Apify last-resort |
 | Web & News | web | Tavily (cheap) or Apify search |
 
@@ -178,8 +185,12 @@ Worth knowing:
 - **Reddit's API is closed to self-service**, so the direct `reddit` connector is
   opt-in. On Railway, Reddit is usually covered by web search and host-tagged as
   Social when reddit.com results appear.
-- **Trustpilot is opt-in**. Add `trustpilot` to a brand's sources and install
-  `playwright`, `selectolax`, and Chromium only in an image that will use it.
+- **The self-hosted Trustpilot connector declines.** It consults robots.txt like
+  every other fetch path, and Trustpilot's robots.txt disallows unrecognised
+  crawlers, so it logs why and yields nothing. The connector is kept rather than
+  removed, because the check is what should decide, not its absence. For
+  Trustpilot data use the Apify actor source, which is a path licensed to serve
+  it.
 - **`web` prefers Tavily** when `TAVILY_API_KEY` is set, else Apify google-search.
 - **Apify is the last resort**, reached only when free sources fall short and a
   token is configured. No token means those sources are simply skipped.
@@ -193,6 +204,7 @@ config/brands.yml              brands + keywords + sources (control surface)
 config/extraction_strategies.yml  per-site CSS selectors for the depth engine
 config/airbyte_sources.yml     Airbyte staging tables -> ReviewBay mappers
 postgres/ddl.sql               raw + marts schemas, pgvector, HNSW index (run once)
+scripts/migrate.py             applies postgres/*.sql in order; refuses destructive SQL
 postgres/002_scraping_engines.sql  additive: indexes, run metrics, caches
 src/reviewbot/
   models.py                    NormalizedReview + brand-keyed stable id
@@ -249,9 +261,14 @@ Prerequisites: a **Neon** Postgres project (free tier is fine), an **OpenAI** AP
 key, and Docker. Optional scraper keys: Tavily, Firecrawl, Apify.
 
 ```bash
-# 1. Create the schema once, then apply the additive migration
-psql "$DATABASE_URL" -f postgres/ddl.sql
-psql "$DATABASE_URL" -f postgres/002_scraping_engines.sql
+# 1. Create the schema and apply any pending migrations. Idempotent, and the
+#    runner refuses to execute anything that drops, truncates or retypes.
+python scripts/migrate.py --dry-run   # see the plan without touching anything
+python scripts/migrate.py             # apply it
+#    No psql needed; it uses the psycopg connection the app already has. If you
+#    would rather use psql directly:
+#      psql "$DATABASE_URL" -f postgres/ddl.sql
+#      psql "$DATABASE_URL" -f postgres/002_scraping_engines.sql
 
 # 2. Configure
 cp .env.example .env      # set DATABASE_URL, OPENAI_API_KEY, and any scraper keys
@@ -285,7 +302,7 @@ uvicorn reviewbot.api.main:app --reload        # app on :8000
 Tests and benchmarks need no database, network or API keys:
 
 ```bash
-pytest tests/ -q                               # 332 tests
+pytest tests/ -q                               # 526 tests (32 more need a real Postgres)
 python scripts/check_frontend_js.py            # the inline UI JS has no build step
 python scripts/benchmark_scraping.py --repeat 5 # reproducible extraction benchmark
 ```
@@ -306,15 +323,21 @@ Key environment variables (all in `.env` locally, or the host's variables tab):
 
 | Variable | Purpose |
 |----------|---------|
-| `DATABASE_URL` | Neon connection string (required) |
-| `OPENAI_API_KEY` | Embeddings + chat (required) |
+| `DATABASE_URL` | Postgres + pgvector connection string (required). On Railway: `${{pgvector.DATABASE_URL_PRIVATE}}` |
+| `OPENAI_API_KEY` | Embeddings + chat (or use OpenRouter alone) |
 | `OPENAI_MODEL` | Chat model; set to one your key supports |
+| `OPENROUTER_API_KEY` | Free-model fallback when OpenAI fails or runs out |
+| `OPENROUTER_MODELS` | Fallback models, in order (default ends with `openrouter/free`) |
+| `OPENROUTER_TASKS` | Which tasks may fall back (default `chat,report`; see below) |
+| `SIGNUP_ENABLED` / `SIGNUP_INVITE_CODE` | Open, invite-only, or closed registration |
+| `ADMIN_EMAILS` | Accounts allowed operator actions |
+| `MAX_BRANDS_PER_ACCOUNT` / `RERUN_COOLDOWN_SECONDS` | Cost controls (25 / 300s) |
 | `TAVILY_API_KEY` | Web search (else falls back to Apify) |
 | `FIRECRAWL_API_KEY` | Opt-in deep scrape |
 | `AIRBYTE_SOURCE_MAP` | Airbyte staging table map (default `config/airbyte_sources.yml`) |
 | `LOCAL_SOURCES` | Free sources the worker runs directly (default `app_store,google_play`) |
 | `APIFY_TOKEN` | Walled-garden sources via Airbyte/Apify, or direct last resort |
-| `AUTH_USER` / `AUTH_PASS` | Optional HTTP basic-auth gate on the whole app |
+| `AUTH_USER` / `AUTH_PASS` | Optional site-wide password gate in front of accounts |
 | `COLLECT_TARGET` / `COLLECT_FLOOR` | Sample target (default 200 / 150) |
 | `SCRAPLING_ENABLED` | Depth engine: read the pages search found (default on) |
 | `SCRAPLING_FETCH_TIER` | `auto` / `requests` / `scrapling` / `browser` |
@@ -327,6 +350,17 @@ Key environment variables (all in `.env` locally, or the host's variables tab):
 Every scraping setting is documented with its operational implication in
 [`.env.example`](.env.example); the full list and defaults are in
 [`docs/SCRAPING_ARCHITECTURE.md`](docs/SCRAPING_ARCHITECTURE.md).
+
+**About the free-model fallback.** A free OpenRouter account gets 50 free-model
+requests a day (1000 a day once $10 of credit has ever been bought), and a
+single background QC pass can use 24 of them. That is why `OPENROUTER_TASKS`
+defaults to `chat,report`, the two things a person is waiting on; set it to
+`all` once the account has credit. Embeddings fall back only to the *same*
+model served through OpenRouter (which is billed, at about OpenAI's price),
+never to a free embedding model: vectors from a different model would make
+search silently return nonsense. With no embeddings provider at all, new
+reviews are still saved and shown on the dashboard, without a vector; chat finds
+them by keyword, and the next run that can embed fills the vectors in.
 
 ---
 
@@ -376,7 +410,13 @@ needed for the sources you choose to manage there.
   enables them.
 - **AI extraction is narrow.** It helps on one page class out of the ten
   benchmarked. Enable it for prose-style review pages, not as a general scraper.
-- **Turn on the password gate for real data.** `GET /api/reports/saved/{id}`
-  takes a sequential id and is only protected by `AUTH_USER`/`AUTH_PASS`, so
-  without them a visitor can enumerate saved reports. See
-  [`docs/SCRAPING_ARCHITECTURE.md`](docs/SCRAPING_ARCHITECTURE.md) §6.
+- **Signup is open by default.** Every tracked brand is scraped on a schedule,
+  which costs money, so on a public URL set `SIGNUP_INVITE_CODE` (or
+  `SIGNUP_ENABLED=0` once your accounts exist). Each account is also capped at
+  `MAX_BRANDS_PER_ACCOUNT` brands.
+- **No password reset yet.** It needs an email sender, which this deployment
+  does not have; a forgotten password currently means a new account.
+- **Free models are weaker and may log prompts.** Fallback answers say which
+  model wrote them. Questions sent to free endpoints may be retained by their
+  providers; `OPENROUTER_DATA_COLLECTION=deny` restricts that, at the cost of
+  fewer available models.

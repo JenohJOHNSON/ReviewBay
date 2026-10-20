@@ -26,6 +26,10 @@ RUN if [ "$WITH_BROWSER" = "1" ]; then \
 
 COPY src/ ./src/
 COPY config/ ./config/
+# The migration runner, the SQL it applies, and the database copy script, so a
+# container can migrate (and, once, populate) its own database. A few KB.
+COPY scripts/migrate.py scripts/copy_database.py ./scripts/
+COPY postgres/ ./postgres/
 ENV PYTHONPATH=/app/src
 
 CMD ["python", "-m", "reviewbot.worker"]
