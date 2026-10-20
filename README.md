@@ -170,7 +170,7 @@ Sources are grouped into categories so the dashboard stays readable
 | Category | Sources | Cost |
 |----------|---------|------|
 | App Reviews | app_store, google_play | Free (Apple RSS + google-play-scraper) |
-| Review Sites | trustpilot, google_maps, yelp, tripadvisor | Trustpilot opt-in self-hosted (Playwright); rest via Apify |
+| Review Sites | trustpilot, google_maps, yelp, tripadvisor | via Apify (the self-hosted Trustpilot path now declines on robots.txt) |
 | Social | reddit, mastodon, hackernews, twitter, linkedin, instagram, facebook, youtube | Free via web tagging/direct open APIs; IG/FB via Apify last-resort |
 | Web & News | web | Tavily (cheap) or Apify search |
 
@@ -178,8 +178,12 @@ Worth knowing:
 - **Reddit's API is closed to self-service**, so the direct `reddit` connector is
   opt-in. On Railway, Reddit is usually covered by web search and host-tagged as
   Social when reddit.com results appear.
-- **Trustpilot is opt-in**. Add `trustpilot` to a brand's sources and install
-  `playwright`, `selectolax`, and Chromium only in an image that will use it.
+- **The self-hosted Trustpilot connector declines.** It consults robots.txt like
+  every other fetch path, and Trustpilot's robots.txt disallows unrecognised
+  crawlers, so it logs why and yields nothing. The connector is kept rather than
+  removed, because the check is what should decide, not its absence. For
+  Trustpilot data use the Apify actor source, which is a path licensed to serve
+  it.
 - **`web` prefers Tavily** when `TAVILY_API_KEY` is set, else Apify google-search.
 - **Apify is the last resort**, reached only when free sources fall short and a
   token is configured. No token means those sources are simply skipped.
@@ -193,6 +197,7 @@ config/brands.yml              brands + keywords + sources (control surface)
 config/extraction_strategies.yml  per-site CSS selectors for the depth engine
 config/airbyte_sources.yml     Airbyte staging tables -> ReviewBay mappers
 postgres/ddl.sql               raw + marts schemas, pgvector, HNSW index (run once)
+scripts/migrate.py             applies postgres/*.sql in order; refuses destructive SQL
 postgres/002_scraping_engines.sql  additive: indexes, run metrics, caches
 src/reviewbot/
   models.py                    NormalizedReview + brand-keyed stable id
@@ -249,9 +254,14 @@ Prerequisites: a **Neon** Postgres project (free tier is fine), an **OpenAI** AP
 key, and Docker. Optional scraper keys: Tavily, Firecrawl, Apify.
 
 ```bash
-# 1. Create the schema once, then apply the additive migration
-psql "$DATABASE_URL" -f postgres/ddl.sql
-psql "$DATABASE_URL" -f postgres/002_scraping_engines.sql
+# 1. Create the schema and apply any pending migrations. Idempotent, and the
+#    runner refuses to execute anything that drops, truncates or retypes.
+python scripts/migrate.py --dry-run   # see the plan without touching anything
+python scripts/migrate.py             # apply it
+#    No psql needed; it uses the psycopg connection the app already has. If you
+#    would rather use psql directly:
+#      psql "$DATABASE_URL" -f postgres/ddl.sql
+#      psql "$DATABASE_URL" -f postgres/002_scraping_engines.sql
 
 # 2. Configure
 cp .env.example .env      # set DATABASE_URL, OPENAI_API_KEY, and any scraper keys
@@ -285,7 +295,7 @@ uvicorn reviewbot.api.main:app --reload        # app on :8000
 Tests and benchmarks need no database, network or API keys:
 
 ```bash
-pytest tests/ -q                               # 332 tests
+pytest tests/ -q                               # 399 tests
 python scripts/check_frontend_js.py            # the inline UI JS has no build step
 python scripts/benchmark_scraping.py --repeat 5 # reproducible extraction benchmark
 ```

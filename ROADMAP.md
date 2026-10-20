@@ -138,20 +138,60 @@ returns a ~200-character snippet with no author, rating or date.
 
 ---
 
+## Phase 8 - the follow-up list  (2026-10-20)  PARTLY DONE
+
+Working the priorities above turned up four more problems, all on the background
+path rather than the request path, which is why the first audit missed them.
+Findings F19-F22 in [`docs/ARCHITECTURE_AUDIT.md`](docs/ARCHITECTURE_AUDIT.md).
+
+- [x] **The QC pass ran in neither deployed entrypoint** (F19, High). `qc()` sets
+      `relevant`, which every dashboard, trend, compare, export and RAG query
+      filters on. It was wired only into `ingestion.run.main()`, which nothing
+      deploys, so on a real deployment the pass never ran and every row stayed
+      `qc_checked = NULL`. It fails open, so there was no error to notice - just
+      a filter that never engaged. Now in `worker.run_cycle()`, after enrichment
+      because QC reads the enriched rows; `WORKER_QC=0` opts out.
+- [x] **Bounded the two in-process caches** (F20, Medium). `insights._CACHE` and
+      `report._CACHE` were dicts keyed by a query parameter, with TTL checked on
+      read and nothing ever removed - one permanent entry per distinct brand
+      string ever requested. Now `api/cache.py`, an LRU with real expiry.
+- [x] **Brought the Trustpilot connector inside both scraping gates** (F21,
+      Medium). It predates `reviewbot.scraping`, so it had no SSRF check on a URL
+      derived from user input and no robots.txt check, while sending a spoofed
+      Chrome user agent. **Behaviour change:** Trustpilot's robots.txt disallows
+      unrecognised crawlers, so it now declines rather than scraping. Use the
+      Apify actor source for Trustpilot data.
+- [x] **`scripts/migrate.py`** (F22, Low), so the schema step no longer needs
+      `psql` installed. Orders `ddl.sql` before the numbered files, records
+      checksums, one transaction per file, and refuses DROP/TRUNCATE/DELETE and
+      type changes before it even opens a connection.
+- [x] **`railway.worker.json`** plus a Railway section in
+      [`DEPLOY.md`](DEPLOY.md), so running both services is a documented
+      two-service setup rather than a gap.
+- [x] Tests: 332 to **399** (plus 143 subtests). Benchmark output unchanged.
+
+---
+
 ## Next priorities
 
-Ordered by value over effort. The first two are operational and need no code.
-
 **1. Run the migration and turn on the password gate** (minutes, no code)
-`psql "$DATABASE_URL" -f postgres/002_scraping_engines.sql` unlocks per-engine
-metrics and the collection-health panel. Setting `AUTH_USER`/`AUTH_PASS` closes
-the enumerable `GET /api/reports/saved/{id}` endpoint. Both are called out in
+
+```
+python scripts/migrate.py --dry-run   # see the plan
+python scripts/migrate.py             # apply it
+```
+
+Unlocks per-engine metrics and the collection-health panel. Then set
+`AUTH_USER`/`AUTH_PASS`, which is what currently stands between a public
+deployment and an enumerable `GET /api/reports/saved/{id}`. Both are in
 [`HANDOFF.md`](HANDOFF.md) section 8.
 
-**2. Decide the worker topology** (a deploy decision)
-`railway.json` builds only the API, so scheduled refresh, the Airbyte import and
-the global `qc()` pass do not run in production even though the docs describe a
-worker. Either deploy the worker service or stop documenting one.
+**2. Create the worker service** (minutes, a deploy decision)
+The config and the documentation are now in place; what remains is the decision.
+Either add a second Railway service pointed at `railway.worker.json`, or schedule
+`RUN_ONCE=1 python -m reviewbot.worker` externally. Doing neither means
+collection never refreshes - and now also means the QC pass never runs, which
+matters more than it did before F1 was fixed.
 
 **3. Measure against a real brand** (half a day)
 The benchmarks are per page *class*, which is the honest way to measure
@@ -160,26 +200,37 @@ real brands with the depth engine on and compare the collection-health panel
 against the pre-change numbers.
 
 **4. Browser tier on a worker** (half a day)
-The measured gap is client-rendered review pages, which currently yield zero.
-`requirements-scraping.txt` plus Chromium on the worker closes it. Keep it off
-the API image.
+The one measured zero is client-rendered review pages. `docker build
+--build-arg WITH_BROWSER=1 -f docker/worker.Dockerfile .` closes it. Keep it off
+the API image: Chromium is 150-300MB resident.
 
-**5. Per-user ownership** (the real fix for finding F11)
-Saved reports and the brand list are currently per-browser `localStorage` with no
-server-side ownership. A minimal account model would let the saved-report
-endpoint be scoped properly instead of relying on a shared password.
+**5. Per-user ownership** (half a day to a week, depending on the answer)
+The real fix for F11, and a **product decision rather than an engineering one**,
+which is why it is still open. Three options, in increasing cost:
+
+| Option | What it gives | What it costs |
+|---|---|---|
+| Leave it, keep the password gate on | nothing new; the hole stays closed by configuration | one forgotten env var reopens it |
+| An opaque owner key the browser generates and keeps in `localStorage`, stored on the row | real per-browser scoping, consistent with how the brand list already works | no recovery if the browser's storage is cleared; not an account |
+| Real accounts | recoverable, shareable, auditable | a login flow, sessions, and a user table |
+
+The middle option matches the app's existing identity model and needs one
+additive nullable column. It is not obviously the right answer, which is exactly
+why it should not be chosen by whoever happens to touch the file next.
 
 **6. Site strategies for the domains that matter** (ongoing, cheap)
 `config/extraction_strategies.yml` is a config-only change. Add an entry when the
 collection-health panel shows a domain the generic extractors read badly.
 
-**7. Deferred from this engagement**
-In-process cache eviction for `insights._CACHE` / `report._CACHE`; teaching the
-legacy Trustpilot connector the robots.txt check the new engine does; and a
-`created_at` column type that would let the trend query stop parsing text dates.
+**7. Still deferred**
+A typed `created_at` column so the trend query stops parsing text dates. This is
+the one remaining item that touches the database contract, so it wants an
+additive column plus a backfill rather than a type change, and it is worth
+measuring before doing: the cost is currently unknown because no live database
+was reachable.
 
 ---
 
-Recommended order: the operational items (1 and 2) first, since they are
-configuration rather than code. Everything after that is additive, and safe to do
-one item at a time.
+Recommended order: 1 and 2 first - they are configuration, they take minutes, and
+until they are done the pipeline is not actually running end to end. Everything
+after that is additive and safe to do one item at a time.

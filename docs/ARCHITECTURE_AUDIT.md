@@ -438,3 +438,95 @@ The pattern worth keeping: **the concurrency bug, the dead code path and the
 inverted limit were all found by running things, not by reading them.** The
 read-through found the data-correctness and security problems; execution found
 the ones where the code did something other than what it said.
+
+---
+
+## 6. Found while working the follow-up list
+
+A second pass over the deployment and lifecycle questions the first audit had
+deferred. These are not leftovers from the list above; they are things the first
+read missed because it followed the *request* path and these all live on the
+*background* path.
+
+### F19 — High — the QC pass runs in neither deployed entrypoint
+
+`qc()` sets `relevant`, and the dashboard, trends, compare, export and RAG
+retrieval all filter on `relevant IS NOT FALSE`. Two entrypoints exist:
+
+| Entrypoint | Deployed by | Runs `qc()`? |
+|---|---|---|
+| `reviewbot.worker` | `docker-compose.yml`, `railway.worker.json` | **no** |
+| `reviewbot.ingestion.run` | nothing | yes |
+
+So the entrypoint that runs the pass is the one nothing deploys. On any real
+deployment every row stayed `qc_checked = NULL`, which fails open — the rows
+still show — so the symptom was not an error but a filter that silently never
+engaged. Keyword collisions were never removed from anything.
+
+This compounds F1 (the critical cross-brand batching bug): the pass that was
+corrupting data when it ran was also not running where it mattered. Fixing F1
+without noticing F19 would have produced a correct pass that still never
+executed.
+
+Fixed: `worker.run_cycle()` now runs it after enrichment, which is the required
+order because QC reads the enriched `marts` rows. `WORKER_QC=0` opts out.
+
+### F20 — Medium — `insights._CACHE` and `report._CACHE` grew without bound
+
+Both were plain dicts keyed by brand with a stored timestamp, checked for expiry
+on read. That expires an entry logically and never removes it, so the dict only
+grew: one permanent entry per distinct brand string ever requested, each holding
+a full payload.
+
+The key comes from a query parameter. It is length-limited and validated, but
+valid is not *known* — any well-formed string that matches no brand still
+produces a cacheable payload and therefore a permanent entry. A slow
+request-driven memory leak rather than a crash, which is why nothing had noticed.
+
+Fixed: `api/cache.py`, a bounded LRU with real expiry. An LRU rather than a FIFO
+because the access pattern is a few brands read repeatedly, so bounding by
+recency keeps the entries actually serving traffic.
+
+### F21 — Medium — the Trustpilot connector was outside both scraping gates
+
+`connectors/playwright_source.py` predates `reviewbot.scraping`, and so predates
+the two gates every other fetch now passes through:
+
+* **No SSRF check.** Its URL comes from the brand's user-supplied `website`, or
+  from `TRUSTPILOT_URL_<BRAND>`, and went straight to a browser that will follow
+  it anywhere — including localhost and the cloud metadata endpoint. The
+  `urlpolicy` guard added for the new engines did not cover this path.
+* **No robots.txt check**, while sending a spoofed desktop-Chrome user agent.
+
+The second one matters beyond the single connector: the documentation says
+ReviewBay honours robots directives, and a second path that ignored them made
+that claim false rather than partial. A compliance posture with a back door is
+not a compliance posture.
+
+Fixed: both gates now apply, and the connector identifies itself as
+`ReviewBayBot`. **This is a behaviour change, stated plainly:** Trustpilot's
+robots.txt disallows unrecognised crawlers, so this connector now declines
+instead of scraping. That is the correct outcome. Trustpilot data through a path
+licensed to serve it is what the Apify actor source is for, and the log message
+says so, because otherwise the next person reads the skip as a breakage and
+removes the check.
+
+### F22 — Low — the schema step assumed a Postgres client
+
+Both migrations were documented as `psql "$DATABASE_URL" -f ...`. Reasonable on
+a server; awkward on a development machine that has the application's
+dependencies but no `psql` — which was the case in this environment, so the
+documented step could not be run at all.
+
+Fixed: `scripts/migrate.py` applies `postgres/*.sql` through the psycopg
+connection the app already depends on, ordering `ddl.sql` before the numbered
+files (sorting by filename alone puts `002` first and creates objects in schemas
+that do not exist yet). It records applied files with a checksum, runs each in
+one transaction, and **refuses destructive SQL** — DROP, TRUNCATE, DELETE and
+type-altering ALTERs abort the run before a connection is even opened, with
+`--allow-destructive` as the deliberate override. No migration in this
+repository needs it.
+
+What is *not* verified: the SQL itself. There is no reachable database here, so
+`ddl.sql` and `002_scraping_engines.sql` have still never executed. The runner
+around them is tested; the statements inside them are not.

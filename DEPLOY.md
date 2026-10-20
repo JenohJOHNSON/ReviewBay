@@ -102,6 +102,15 @@ cd ~/reviewbay
 docker compose up -d --build
 ```
 
+Then apply the database schema. This is safe to re-run; every migration in
+`postgres/` is additive and idempotent, and the runner refuses to execute
+anything that drops, truncates or retypes:
+
+```
+docker compose run --rm worker python scripts/migrate.py --dry-run   # look first
+docker compose run --rm worker python scripts/migrate.py             # apply
+```
+
 The first build takes a few minutes. Enrichment uses the OpenAI embeddings API,
 so there is no local model download. Check the website:
 
@@ -128,6 +137,57 @@ running whether or not your laptop is on.
 - Logs: `docker compose logs -f api` or `docker compose logs -f worker`.
 - Update after code changes: `git pull` (if you cloned) then `docker compose up -d --build`.
 - Stop: `docker compose down`. Start: `docker compose up -d`.
+
+## Deploying on Railway instead
+
+`docker-compose.yml` runs **two** services, and both matter:
+
+| Service | What it does | Public? |
+|---|---|---|
+| `api` | the website, the chatbot, and onboarding-time collection | yes |
+| `worker` | the Airbyte import, the free local sources, enrichment, and the QC pass | no |
+
+A compose deployment gets both. A Railway deployment needs them created as two
+services, because `railway.json` describes only the API — so a Railway project
+built from that file alone has no worker, and scheduled refresh, the Airbyte
+import and the global QC pass never run. The symptom is subtle rather than loud:
+the site works, the dashboard shows data, and the data quietly stops being
+refreshed.
+
+To run both on Railway, create two services from the same repository and point
+each at its own config file (Railway service settings → *Config-as-code path*):
+
+| Service | Config-as-code path | Networking |
+|---|---|---|
+| `reviewbay-api` | `railway.json` | generate a domain |
+| `reviewbay-worker` | `railway.worker.json` | none — it serves no HTTP |
+
+Give both the same environment variables; the worker needs `DATABASE_URL` and
+`OPENAI_API_KEY` at minimum. Do **not** set a healthcheck path on the worker: it
+is a loop, not a server, and Railway would fail the deploy waiting for an HTTP
+200 that never comes.
+
+If you would rather run one service, that is a legitimate choice for a small
+deployment — but then nothing runs the worker's cycle, so schedule it externally
+instead of leaving the gap:
+
+```
+RUN_ONCE=1 python -m reviewbot.worker
+```
+
+That performs exactly one cycle and exits, which is what a Railway cron service
+or any external scheduler wants. `WORKER_INTERVAL_SECONDS` (default 900) only
+applies to the long-running form.
+
+The browser tier for client-rendered review pages belongs on the worker and
+nowhere else:
+
+```
+docker build --build-arg WITH_BROWSER=1 -f docker/worker.Dockerfile .
+```
+
+It adds roughly 400MB and a Chromium process of 150-300MB resident. The API
+serves a dashboard on a small instance and has no business launching browsers.
 
 ## Later upgrades (optional)
 

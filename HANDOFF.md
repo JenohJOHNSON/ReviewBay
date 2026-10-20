@@ -27,7 +27,7 @@ and a local-ML review summary. See `README.md` for the full description.
 | Insights | scikit-learn (TF-IDF + KMeans) | no LLM, deterministic |
 | Web search | Tavily (preferred) or Apify google-search | `web` source |
 | Deep scrape | Firecrawl | opt-in per brand |
-| Trustpilot | Playwright + Selectolax (self-hosted) | opt-in; no per-page fee; needs chromium |
+| Trustpilot | Playwright + Selectolax (self-hosted) | opt-in, but **declines**: robots.txt disallows us. Use the Apify actor |
 | App reviews | Apple RSS + google-play-scraper | free |
 | Other sites | Apify actors | Google Maps / Yelp / TripAdvisor / IG / FB |
 | **Depth extraction** | **Scrapling 0.5** | base install is the lxml parser only, no browser. Reads the pages web search finds. On by default |
@@ -99,6 +99,43 @@ Database schema (once): `psql "$DATABASE_URL" -f postgres/ddl.sql`.
   missing credential turns the source off instead of crashing the run.
 
 ## 7. Recent work (most recent first)
+
+### 2026-10-20 (later the same day) - the follow-up list
+
+Working the next-priorities list surfaced four more problems, all on the
+**background** path rather than the request path, which is why the first audit
+read missed them. Findings F19-F22 in
+[`docs/ARCHITECTURE_AUDIT.md`](docs/ARCHITECTURE_AUDIT.md).
+
+- **The QC pass ran in neither deployed entrypoint.** `qc()` sets `relevant`,
+  which the dashboard, trends, compare, export and RAG retrieval all filter on.
+  It was wired only into `ingestion.run.main()`, which nothing deploys;
+  `reviewbot.worker` - what compose and Railway actually start - did the Airbyte
+  import, local sources and enrichment, then stopped. The filter fails open, so
+  there was no error, just a QC pass that never engaged on any real deployment.
+  Now in `worker.run_cycle()` after enrichment (QC reads the enriched rows), with
+  `WORKER_QC=0` to opt out. `qc()` also now skips cleanly with no
+  `OPENAI_API_KEY` instead of logging a traceback for each of ~24 batches.
+- **The two in-process caches were unbounded.** `insights._CACHE` and
+  `report._CACHE` were dicts keyed by the `brand` query parameter, expiry checked
+  on read and nothing ever deleted. Valid is not known: any well-formed string
+  that matches no brand still produced a cacheable payload and a permanent entry.
+  Replaced with `api/cache.py`, a bounded LRU with real expiry.
+- **The Trustpilot connector sat outside both scraping gates.** It predates
+  `reviewbot.scraping`: no SSRF check on a URL built from the user-supplied
+  `website` or `TRUSTPILOT_URL_<BRAND>` and handed to a browser, and no robots.txt
+  check, while sending a spoofed desktop-Chrome user agent. Both gates now apply
+  and it identifies itself as `ReviewBayBot`. **Behaviour change** - see section 8.
+- **`scripts/migrate.py`**, because both migrations were documented as `psql ...`
+  and `psql` is not necessarily installed. Orders `ddl.sql` before the numbered
+  files, records checksums, one transaction per file, and refuses destructive SQL
+  before it opens a connection.
+- **`railway.worker.json`** and a Railway section in [`DEPLOY.md`](DEPLOY.md), so
+  the two-service topology is documented rather than implied.
+
+Tests 332 -> **399** (plus 143 subtests). Doctests, the frontend check and the
+benchmark all re-run; benchmark output is unchanged.
+
 
 ### 2026-10-20 - Scrapling + ScrapeGraphAI, and an audit-driven cleanup
 
@@ -248,31 +285,52 @@ API keys.
 
 ## 8. Pending / next steps
 
-### From the 2026-10-20 engagement
+### Do these two first
 
-- [ ] **Run the migration** on the live database:
-      `psql "$DATABASE_URL" -f postgres/002_scraping_engines.sql`. Until then the
+Until both are done the pipeline is not running end to end, and neither needs a
+code change.
+
+- [ ] **Run the migration.** `python scripts/migrate.py --dry-run` to see the
+      plan, then `python scripts/migrate.py` to apply it. No `psql` needed; it is
+      idempotent and it refuses to execute anything destructive. Until then the
       collection-health panel shows `migration_required` and per-engine metrics
-      are not recorded. Everything else works.
+      are not recorded - everything else works.
+- [ ] **Create the worker service, or schedule the cycle.** `railway.json` builds
+      only the API. Add a second Railway service with its config-as-code path set
+      to `railway.worker.json` (no healthcheck - it is a loop, not a server), or
+      run `RUN_ONCE=1 python -m reviewbot.worker` from an external scheduler.
+      Doing neither means collection never refreshes **and** the QC pass never
+      runs. `DEPLOY.md` has both options written out.
+
+### Also pending
+
 - [ ] **Set `AUTH_USER` / `AUTH_PASS`** on any deployment holding real brands.
       `GET /api/reports/saved/{id}` takes a sequential id and is protected only by
-      that gate, so without it saved reports are enumerable. Documented rather
-      than changed because fixing it properly needs a per-user ownership model,
-      which is a product decision.
-- [ ] **Decide the worker topology.** `railway.json` builds only the API, so the
-      worker loop - scheduled refresh, the Airbyte import, the global `qc()` pass
-      - does not run in production, though this file and the README describe one.
-      This predates the engagement; it needs a deploy decision, not a code change.
-- [ ] Optional: install `requirements-scraping.txt` plus Chromium **on a worker**
-      to enable the browser tier for client-rendered review pages. Do not put it
-      on the API image; a Chromium process is 150-300MB resident.
+      that gate, so without it saved reports are enumerable. Still documented
+      rather than changed, because the proper fix is an ownership model and that
+      is a product decision - `ROADMAP.md` lays out the three options and what
+      each costs.
+- [ ] Optional: build the worker with `--build-arg WITH_BROWSER=1` to enable the
+      browser tier for client-rendered review pages. Do not put it on the API
+      image; a Chromium process is 150-300MB resident.
 - [ ] Optional: `SCRAPEGRAPH_ENABLED=1` for brands whose reviews live in prose
       pages. Start with `SCRAPEGRAPH_MAX_COST_PER_RUN` low and watch the cost
       column in the collection-health panel.
-- [ ] Not done: in-process cache eviction for `insights._CACHE` and
-      `report._CACHE` (bounded in practice by brand count), and the legacy
-      Trustpilot connector still does not consult robots.txt the way the new
-      engine does.
+- [ ] Still deferred: a typed `created_at` column so the trend query stops
+      parsing text dates. It touches the database contract, so it wants an
+      additive column plus a backfill rather than a type change, and the cost is
+      worth measuring first - no live database was reachable to measure it.
+
+### Behaviour change to be aware of
+
+- **The Trustpilot/Playwright connector now declines.** It consults robots.txt
+  like every other fetch path, and Trustpilot's robots.txt disallows
+  unrecognised crawlers. If a brand lists `trustpilot` in its sources you will
+  see a WARNING naming the URL and saying to use the Apify actor source instead.
+  That is the check working, not a breakage. The connector was previously sending
+  a spoofed Chrome user agent, which is how a crawler evades rules written for
+  crawlers; the documentation claimed robots compliance throughout, so this path
+  made that claim false rather than partial.
 
 ### Earlier
 
@@ -325,3 +383,15 @@ API keys.
   asserts that against the source. Do not enable them.
 - The inline frontend JS has no build step or linter. Run
   `python scripts/check_frontend_js.py` after editing a `<script>` block.
+- There are two worker entrypoints and only one is deployed. `reviewbot.worker`
+  is what `docker-compose.yml` and `railway.worker.json` start;
+  `reviewbot.ingestion.run` is a separate loop that nothing deploys. Work added
+  to the wrong one looks wired up and never runs - that is exactly how the QC
+  pass went missing. Put scheduled work in `worker.run_cycle()`.
+- Anything cached in process belongs in `api.cache.TTLCache`, not a dict. A dict
+  keyed by a request parameter with a TTL checked on read expires entries
+  logically and keeps them forever.
+- Any new connector that fetches a URL must pass `urlpolicy.check()` and
+  `robots.can_fetch()` first. Both gates live in `reviewbot.scraping` rather than
+  in the engine precisely so a second fetch path cannot quietly skip them, which
+  is what the Trustpilot connector did for as long as it predated them.
