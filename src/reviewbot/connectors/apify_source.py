@@ -271,10 +271,20 @@ class ApifyConnector(BaseConnector):
         if not client:
             return
 
+        # `limit` shapes the actor input, but an actor that over-delivers used to
+        # write every row it produced. Honour the cap on the way out too.
+        emitted = 0
         for item in client.dataset(dataset_id).iterate_items():
+            if emitted >= limit:
+                log.info(
+                    "%s: reached limit=%d for brand=%s; ignoring the rest of the dataset",
+                    self.source_name, limit, brand,
+                )
+                return
             try:
                 review = self.spec.map_item(brand, item)
                 if review and review.source_url and review.text.strip():
+                    emitted += 1
                     yield review
             except Exception:  # noqa: BLE001
                 log.exception("skipping malformed %s item", self.spec.source_name)

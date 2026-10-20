@@ -67,7 +67,12 @@
 const selA = document.getElementById('selA');
 const selB = document.getElementById('selB');
 const content = document.getElementById('content');
-function esc(s){ return (s||'').toString().replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+// Escape for BOTH text and attribute contexts. Review text, authors and
+// source URLs are scraped from the open web, and several templates below
+// interpolate them inside double-quoted attributes (href, title), so the
+// quote characters MUST be escaped too: without them a scraped URL
+// containing a double quote could close the attribute and inject its own.
+function esc(s){ return (s==null?'':String(s)).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 function fillSelect(sel, brands, chosen){
   sel.innerHTML = '<option value="">pick a brand</option>' +

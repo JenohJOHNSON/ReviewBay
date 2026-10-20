@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import logging
 import os
+import random
+import time
 from functools import lru_cache
 
 log = logging.getLogger(__name__)
@@ -39,6 +41,12 @@ EMBED_DIM = int(os.environ.get("EMBED_DIM", "768"))
 _MAX_INPUTS_PER_CALL = 96
 _MAX_CHARS_PER_INPUT = 8000
 
+# A rate limit or a blip used to fail the whole enrichment batch. Retry with
+# exponential backoff plus jitter (jitter matters: without it, every worker that
+# hit the same limit retries in lockstep and hits it again).
+_MAX_ATTEMPTS = int(os.environ.get("EMBED_MAX_ATTEMPTS", "4"))
+_BACKOFF_BASE = float(os.environ.get("EMBED_BACKOFF_SECONDS", "1.0"))
+
 
 @lru_cache(maxsize=1)
 def _client():
@@ -57,11 +65,51 @@ def _prep(text: str) -> str:
     return t[:_MAX_CHARS_PER_INPUT]
 
 
+def _retryable(exc: Exception) -> bool:
+    """Whether an embeddings failure is worth retrying.
+
+    Rate limits, timeouts, connection errors and 5xx are transient. An invalid
+    request (a bad model id, an input over the token limit) is not: retrying it
+    just burns time and returns the same error.
+    """
+    name = type(exc).__name__
+    if name in ("RateLimitError", "APITimeoutError", "APIConnectionError", "InternalServerError"):
+        return True
+    status = getattr(exc, "status_code", None) or getattr(exc, "http_status", None)
+    return isinstance(status, int) and (status == 429 or status >= 500)
+
+
+def _embed_chunk(client, chunk: list[str]) -> list[list[float]]:
+    """One embeddings request, retried on transient failures."""
+    last: Exception | None = None
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        try:
+            resp = client.embeddings.create(
+                model=EMBED_MODEL, input=chunk, dimensions=EMBED_DIM
+            )
+            # resp.data comes back in input order, but sort by index to be safe.
+            return [
+                [float(x) for x in d.embedding]
+                for d in sorted(resp.data, key=lambda d: d.index)
+            ]
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            if attempt >= _MAX_ATTEMPTS or not _retryable(exc):
+                raise
+            delay = _BACKOFF_BASE * (2 ** (attempt - 1)) + random.uniform(0, _BACKOFF_BASE)
+            log.warning(
+                "embeddings: %s on attempt %d/%d for %d input(s); retrying in %.1fs",
+                type(exc).__name__, attempt, _MAX_ATTEMPTS, len(chunk), delay,
+            )
+            time.sleep(delay)
+    raise last if last else RuntimeError("embeddings failed with no error recorded")
+
+
 def embed(texts: list[str]) -> list[list[float]]:
     """Turn a batch of texts into 768-dim vectors (list of floats each).
 
     Order is preserved. Chunks large batches across calls to respect request
-    limits.
+    limits, and retries a chunk that hits a rate limit or a transient error.
     """
     if not texts:
         return []
@@ -69,11 +117,7 @@ def embed(texts: list[str]) -> list[list[float]]:
     out: list[list[float]] = []
     prepped = [_prep(t) for t in texts]
     for i in range(0, len(prepped), _MAX_INPUTS_PER_CALL):
-        chunk = prepped[i : i + _MAX_INPUTS_PER_CALL]
-        resp = client.embeddings.create(model=EMBED_MODEL, input=chunk, dimensions=EMBED_DIM)
-        # resp.data comes back in input order, but sort by index to be safe.
-        for d in sorted(resp.data, key=lambda d: d.index):
-            out.append([float(x) for x in d.embedding])
+        out.extend(_embed_chunk(client, prepped[i : i + _MAX_INPUTS_PER_CALL]))
     return out
 
 

@@ -3,6 +3,15 @@
 Returns one JSON blob the dashboard page renders: totals, sentiment split,
 source mix, per-brand counts, average rating, and the latest negative reviews.
 Optional brand filter narrows everything except the brand list.
+
+Two things to know before editing a query here:
+
+* The brand filter is `brand ILIKE :brand`, so the value MUST go through
+  `db.like_param()`. Unescaped, `?brand=%` matches every brand in the database.
+* `created_at` is stored as text in mixed ISO shapes. The trend and alert
+  aggregations therefore bucket on a regex-guarded `YYYY-MM-DD` prefix inside
+  Postgres. The previous version pulled every matching row into Python to parse
+  dates there, which meant a full table read on every dashboard load.
 """
 
 from __future__ import annotations
@@ -14,7 +23,21 @@ from .. import db
 # (NULL = not yet checked, so nothing disappears until QC judges it), keeping the
 # whole dashboard, sentiment, sources, trends, compare, to relevant reviews.
 _BRAND = "(%(brand)s::text IS NULL OR brand ILIKE %(brand)s::text)"
-_WHERE = _BRAND + " AND relevant IS NOT FALSE"
+_RELEVANT = "relevant IS NOT FALSE"
+_WHERE = _BRAND + " AND " + _RELEVANT
+
+# `created_at` as a real date, or NULL when the stored string is not ISO-ish
+# (Google sometimes hands back "6 years ago"). Full-date strings keep their day;
+# year-month strings are pinned to the 1st, which is what the Python parser
+# effectively did too.
+_CREATED_DATE = """
+(CASE
+   WHEN created_at ~ '^\\s*\\d{4}-\\d{2}-\\d{2}'
+     THEN substring(created_at from '^\\s*(\\d{4}-\\d{2}-\\d{2})')
+   WHEN created_at ~ '^\\s*\\d{4}-\\d{2}'
+     THEN substring(created_at from '^\\s*(\\d{4}-\\d{2})') || '-01'
+ END)::date
+"""
 
 # Whitelisted sort orders for the reviews list. Only these keys are accepted from
 # the API, so the clause can be interpolated safely (no SQL injection surface).
@@ -39,6 +62,11 @@ _SORTS = {
 
 def _connect():
     return db.connect()
+
+
+def _p(brand: str | None, **extra) -> dict:
+    """Query parameters with the brand escaped for ILIKE."""
+    return {"brand": db.like_param(brand), **extra}
 
 
 def _empty_stats(brand: str | None, setup_required: str | None = None) -> dict:
@@ -68,28 +96,36 @@ def _cols(cur) -> list[str]:
 
 
 def get_stats(brand: str | None = None) -> dict:
-    b = {"brand": brand}
+    b = _p(brand)
     try:
-        conn = _connect()
+        return _get_stats(brand, b)
     except db.DatabaseConfigError:
         return _empty_stats(brand, "database")
-    try:
+
+
+def _get_stats(brand: str | None, b: dict) -> dict:
+    with db.connection() as conn:
         cur = conn.cursor()
 
-        cur.execute(f"SELECT COUNT(*) FROM MARTS.REVIEWS WHERE {_WHERE}", b)
-        total = cur.fetchone()[0]
-
-        # How many the QC pass filtered out as off-topic (shown as a note).
-        cur.execute(f"SELECT COUNT(*) FROM MARTS.REVIEWS WHERE {_BRAND} AND relevant = FALSE", b)
-        flagged_offtopic = cur.fetchone()[0]
-
-        sentiment = {"positive": 0, "neutral": 0, "negative": 0}
+        # Totals, off-topic count, sentiment split and average rating in ONE pass
+        # over the brand's rows instead of four separate scans.
         cur.execute(
-            f"SELECT sentiment, COUNT(*) FROM MARTS.REVIEWS WHERE {_WHERE} GROUP BY sentiment", b
+            f"""
+            SELECT
+                COUNT(*) FILTER (WHERE {_RELEVANT})                      AS total,
+                COUNT(*) FILTER (WHERE relevant = FALSE)                 AS flagged_offtopic,
+                COUNT(*) FILTER (WHERE {_RELEVANT} AND sentiment = 'positive') AS positive,
+                COUNT(*) FILTER (WHERE {_RELEVANT} AND sentiment = 'neutral')  AS neutral,
+                COUNT(*) FILTER (WHERE {_RELEVANT} AND sentiment = 'negative') AS negative,
+                AVG(rating) FILTER (WHERE {_RELEVANT} AND rating IS NOT NULL)  AS avg_rating
+            FROM MARTS.REVIEWS
+            WHERE {_BRAND}
+            """,
+            b,
         )
-        for s, c in cur.fetchall():
-            if s in sentiment:
-                sentiment[s] = c
+        total, flagged_offtopic, pos, neu, neg, ar = cur.fetchone()
+        sentiment = {"positive": pos or 0, "neutral": neu or 0, "negative": neg or 0}
+        avg_rating = round(float(ar), 2) if ar is not None else None
 
         cur.execute(
             f"SELECT source, COUNT(*) FROM MARTS.REVIEWS WHERE {_WHERE} GROUP BY source ORDER BY 2 DESC",
@@ -99,12 +135,6 @@ def get_stats(brand: str | None = None) -> dict:
         from ..sources import group_by_category
 
         by_category = group_by_category(by_source)
-
-        cur.execute(
-            f"SELECT AVG(rating) FROM MARTS.REVIEWS WHERE rating IS NOT NULL AND {_WHERE}", b
-        )
-        ar = cur.fetchone()[0]
-        avg_rating = round(float(ar), 2) if ar is not None else None
 
         cur.execute(
             f"""
@@ -130,8 +160,8 @@ def get_stats(brand: str | None = None) -> dict:
             # Brand roster intentionally omitted: the per-browser brand list lives
             # in the client's localStorage, so the API never returns every brand.
             "brands": [],
-            "total": total,
-            "flagged_offtopic": flagged_offtopic,
+            "total": total or 0,
+            "flagged_offtopic": flagged_offtopic or 0,
             "sentiment": sentiment,
             "by_source": by_source,
             "by_category": by_category,
@@ -139,8 +169,6 @@ def get_stats(brand: str | None = None) -> dict:
             "avg_rating": avg_rating,
             "recent_negative": recent_negative,
         }
-    finally:
-        conn.close()
 
 
 def health_score(sentiment: dict, avg_rating: float | None) -> dict:
@@ -161,21 +189,23 @@ def health_score(sentiment: dict, avg_rating: float | None) -> dict:
 
 def _brand_block(cur, brand: str) -> dict:
     """One brand's slice for the compare view: count, sentiment, rating, sources."""
-    b = {"brand": brand}
+    b = _p(brand)
 
-    cur.execute(f"SELECT COUNT(*) FROM MARTS.REVIEWS WHERE {_WHERE}", b)
-    total = cur.fetchone()[0]
-
-    sentiment = {"positive": 0, "neutral": 0, "negative": 0}
     cur.execute(
-        f"SELECT sentiment, COUNT(*) FROM MARTS.REVIEWS WHERE {_WHERE} GROUP BY sentiment", b
+        f"""
+        SELECT
+            COUNT(*)                                            AS total,
+            COUNT(*) FILTER (WHERE sentiment = 'positive')       AS positive,
+            COUNT(*) FILTER (WHERE sentiment = 'neutral')        AS neutral,
+            COUNT(*) FILTER (WHERE sentiment = 'negative')       AS negative,
+            AVG(rating) FILTER (WHERE rating IS NOT NULL)        AS avg_rating
+        FROM MARTS.REVIEWS
+        WHERE {_WHERE}
+        """,
+        b,
     )
-    for s, c in cur.fetchall():
-        if s in sentiment:
-            sentiment[s] = c
-
-    cur.execute(f"SELECT AVG(rating) FROM MARTS.REVIEWS WHERE rating IS NOT NULL AND {_WHERE}", b)
-    ar = cur.fetchone()[0]
+    total, pos, neu, neg, ar = cur.fetchone()
+    sentiment = {"positive": pos or 0, "neutral": neu or 0, "negative": neg or 0}
     avg_rating = round(float(ar), 2) if ar is not None else None
 
     cur.execute(
@@ -186,7 +216,7 @@ def _brand_block(cur, brand: str) -> dict:
 
     return {
         "brand": brand,
-        "total": total,
+        "total": total or 0,
         "sentiment": sentiment,
         "avg_rating": avg_rating,
         "by_source": by_source,
@@ -202,23 +232,24 @@ def compare_stats(a: str | None = None, b: str | None = None) -> dict:
     leaking whatever brands happen to be stored.
     """
     try:
-        conn = _connect()
+        with db.connection() as conn:
+            cur = conn.cursor()
+            left = _brand_block(cur, a) if a else None
+            right = _brand_block(cur, b) if b else None
+            cur.close()
+            return {"brands": [], "a": left, "b": right}
     except db.DatabaseConfigError:
         return {"brands": [], "a": None, "b": None, "setup_required": "database"}
-    try:
-        cur = conn.cursor()
-        left = _brand_block(cur, a) if a else None
-        right = _brand_block(cur, b) if b else None
-        cur.close()
-        return {"brands": [], "a": left, "b": right}
-    finally:
-        conn.close()
 
 
 def _parse_dt(s: str | None):
     """Parse a review's created_at (mixed ISO shapes) to a UTC-aware datetime,
     else None. Naive timestamps are assumed UTC, so aware and naive values stay
-    comparable (some sources include an offset, some do not)."""
+    comparable (some sources include an offset, some do not).
+
+    Kept for callers outside the dashboard queries; the trend and alert
+    aggregations now do their date handling in SQL (see `_CREATED_DATE`).
+    """
     if not s:
         return None
     from datetime import datetime, timezone
@@ -237,37 +268,47 @@ def get_trend(brand: str | None = None, bucket: str = "month") -> dict:
     scraped it), so the trend reflects real history. Reviews without a parseable
     date are excluded. Buckets with no reviews are omitted.
     """
-    fmt = "%Y" if bucket == "year" else "%Y-%m"
+    fmt = "YYYY" if bucket == "year" else "YYYY-MM"
     try:
-        conn = _connect()
+        with db.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    WITH dated AS (
+                        SELECT sentiment, {_CREATED_DATE} AS d
+                        FROM marts.reviews
+                        WHERE {_WHERE} AND created_at IS NOT NULL
+                    )
+                    SELECT to_char(d, %(fmt)s) AS period,
+                           COUNT(*) FILTER (WHERE sentiment = 'positive') AS positive,
+                           COUNT(*) FILTER (WHERE sentiment = 'neutral')  AS neutral,
+                           COUNT(*) FILTER (WHERE sentiment = 'negative') AS negative,
+                           COUNT(*) AS total
+                    FROM dated
+                    WHERE d IS NOT NULL
+                    GROUP BY 1
+                    ORDER BY 1
+                    """,
+                    _p(brand, fmt=fmt),
+                )
+                rows = cur.fetchall()
     except db.DatabaseConfigError:
         return {"brand": brand, "bucket": bucket, "buckets": [], "setup_required": "database"}
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"SELECT created_at, sentiment FROM marts.reviews "
-                f"WHERE {_WHERE} AND created_at IS NOT NULL",
-                {"brand": brand},
-            )
-            rows = cur.fetchall()
-    finally:
-        conn.close()
 
-    from collections import defaultdict
-
-    buckets: dict = defaultdict(lambda: {"positive": 0, "neutral": 0, "negative": 0})
-    for created, sentiment in rows:
-        dt = _parse_dt(created)
-        if not dt:
-            continue
-        key = dt.strftime(fmt)
-        if sentiment in buckets[key]:
-            buckets[key][sentiment] += 1
-    out = []
-    for k in sorted(buckets):
-        b = buckets[k]
-        out.append({"period": k, **b, "total": b["positive"] + b["neutral"] + b["negative"]})
-    return {"brand": brand, "bucket": bucket, "buckets": out}
+    buckets = [
+        {
+            "period": period,
+            "positive": pos,
+            "neutral": neu,
+            "negative": neg,
+            # `total` counts every sentiment value including NULL/unknown, while
+            # the three buckets only count the known ones. Keep the shape the UI
+            # expects (total == sum of the three) rather than the raw count.
+            "total": pos + neu + neg,
+        }
+        for period, pos, neu, neg, total in rows
+    ]
+    return {"brand": brand, "bucket": bucket, "buckets": buckets}
 
 
 def get_sentiment_alert(brand: str | None = None, recent_n: int = 30) -> dict:
@@ -275,35 +316,49 @@ def get_sentiment_alert(brand: str | None = None, recent_n: int = 30) -> dict:
     recent reviews (by post date) against the older baseline. Deterministic and
     in-app, no external notifications.
     """
+    recent_n = max(1, min(int(recent_n), 500))
     try:
-        conn = _connect()
+        with db.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    WITH dated AS (
+                        SELECT sentiment, {_CREATED_DATE} AS d, captured_at
+                        FROM marts.reviews
+                        WHERE {_WHERE} AND created_at IS NOT NULL
+                    ),
+                    ranked AS (
+                        SELECT sentiment,
+                               row_number() OVER (ORDER BY d DESC, captured_at DESC) AS rn
+                        FROM dated
+                        WHERE d IS NOT NULL
+                    )
+                    SELECT
+                        COUNT(*) FILTER (WHERE rn <= %(n)s)                                AS recent_total,
+                        COUNT(*) FILTER (WHERE rn <= %(n)s AND sentiment = 'negative')     AS recent_neg,
+                        COUNT(*) FILTER (WHERE rn >  %(n)s)                                AS base_total,
+                        COUNT(*) FILTER (WHERE rn >  %(n)s AND sentiment = 'negative')     AS base_neg
+                    FROM ranked
+                    """,
+                    _p(brand, n=recent_n),
+                )
+                recent_total, recent_neg, base_total, base_neg = cur.fetchone()
     except db.DatabaseConfigError:
         return {
             "status": "setup_required",
             "message": "Database is not configured yet.",
             "setup_required": "database",
         }
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"SELECT created_at, sentiment FROM marts.reviews "
-                f"WHERE {_WHERE} AND created_at IS NOT NULL",
-                {"brand": brand},
-            )
-            rows = cur.fetchall()
-    finally:
-        conn.close()
 
-    dated = [(dt, s) for (c, s) in rows if (dt := _parse_dt(c))]
-    dated.sort(key=lambda x: x[0], reverse=True)
-    if len(dated) < recent_n + 10:
+    recent_total = recent_total or 0
+    base_total = base_total or 0
+    # Same bar as before: enough recent reviews to fill the window, plus a
+    # baseline of at least 10 to compare against.
+    if recent_total < recent_n or base_total < 10:
         return {"status": "insufficient", "message": "Not enough dated reviews yet to spot a trend."}
 
-    def neg_pct(group):
-        return round(100 * sum(1 for _, s in group if s == "negative") / len(group)) if group else 0
-
-    recent, baseline = dated[:recent_n], dated[recent_n:]
-    r, b = neg_pct(recent), neg_pct(baseline)
+    r = round(100 * (recent_neg or 0) / recent_total)
+    b = round(100 * (base_neg or 0) / base_total)
     delta = r - b
     if delta >= 15:
         status, msg = "drop", f"Negative reviews are up sharply lately ({b}% to {r}%)."
@@ -312,7 +367,7 @@ def get_sentiment_alert(brand: str | None = None, recent_n: int = 30) -> dict:
     else:
         status, msg = "ok", f"Sentiment is steady (recent negatives {r}%, baseline {b}%)."
     return {"status": status, "message": msg, "recent_negative_pct": r,
-            "baseline_negative_pct": b, "delta": delta, "recent_n": len(recent)}
+            "baseline_negative_pct": b, "delta": delta, "recent_n": recent_total}
 
 
 def get_reviews(
@@ -324,7 +379,7 @@ def get_reviews(
     limit = max(1, min(int(limit), 200))
     src = source or None
     try:
-        conn = _connect()
+        return _get_reviews(brand, sort, order, limit, src)
     except db.DatabaseConfigError:
         return {
             "brand": brand,
@@ -333,7 +388,10 @@ def get_reviews(
             "reviews": [],
             "setup_required": "database",
         }
-    try:
+
+
+def _get_reviews(brand, sort, order, limit, src) -> dict:
+    with db.connection() as conn:
         cur = conn.cursor()
         cur.execute(
             f"""
@@ -341,9 +399,9 @@ def get_reviews(
             FROM MARTS.REVIEWS
             WHERE {_WHERE} AND (%(source)s::text IS NULL OR source = %(source)s::text)
             ORDER BY {order}
-            LIMIT {limit}
+            LIMIT %(limit)s
             """,
-            {"brand": brand, "source": src},
+            _p(brand, source=src, limit=limit),
         )
         cols = _cols(cur)
         reviews = []
@@ -357,5 +415,3 @@ def get_reviews(
         cur.close()
         return {"brand": brand, "sort": sort if sort in _SORTS else "recent",
                 "source": src, "reviews": reviews}
-    finally:
-        conn.close()

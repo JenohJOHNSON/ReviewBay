@@ -37,7 +37,11 @@ INSIGHTS_TTL = int(os.environ.get("INSIGHTS_TTL", "900"))       # cache 15 min
 INSIGHTS_SAMPLE = int(os.environ.get("INSIGHTS_SAMPLE", "60"))  # reviews per report
 
 # ::text so Postgres can infer the parameter type in the `IS NULL` branch.
-_WHERE = "(%(brand)s::text IS NULL OR brand ILIKE %(brand)s::text)"
+# `relevant IS NOT FALSE` matches the dashboard queries in stats.py. It used to
+# be missing here, so reviews the QC pass had judged off-topic were excluded from
+# the headline numbers but still shaped the themes, pros and cons on the very
+# same page.
+_WHERE = "(%(brand)s::text IS NULL OR brand ILIKE %(brand)s::text) AND relevant IS NOT FALSE"
 _CACHE: dict[str, tuple[float, dict]] = {}
 _LOCK = threading.Lock()
 
@@ -55,8 +59,7 @@ def _cols(cur) -> list[str]:
 
 
 def _sample_reviews(brand: str | None) -> list[dict]:
-    conn = _connect()
-    try:
+    with db.connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 f"""
@@ -66,12 +69,10 @@ def _sample_reviews(brand: str | None) -> list[dict]:
                 ORDER BY captured_at DESC
                 LIMIT %(n)s
                 """,
-                {"brand": brand, "n": INSIGHTS_SAMPLE},
+                {"brand": db.like_param(brand), "n": INSIGHTS_SAMPLE},
             )
             cols = _cols(cur)
             return [dict(zip(cols, r)) for r in cur.fetchall()]
-    finally:
-        conn.close()
 
 
 # --- small text helpers (deterministic) --------------------------------------
