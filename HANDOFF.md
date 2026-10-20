@@ -4,7 +4,7 @@ A living snapshot of where the project stands, why it is built this way, and wha
 is next. Update the "Last updated" line and the relevant sections whenever
 something meaningful changes.
 
-**Last updated:** 2026-07-08
+**Last updated:** 2026-10-20
 
 ---
 
@@ -30,6 +30,10 @@ and a local-ML review summary. See `README.md` for the full description.
 | Trustpilot | Playwright + Selectolax (self-hosted) | opt-in; no per-page fee; needs chromium |
 | App reviews | Apple RSS + google-play-scraper | free |
 | Other sites | Apify actors | Google Maps / Yelp / TripAdvisor / IG / FB |
+| **Depth extraction** | **Scrapling 0.5** | base install is the lxml parser only, no browser. Reads the pages web search finds. On by default |
+| **AI extraction** | **ScrapeGraphAI (opt-in) or built-in OpenAI backend** | OFF by default. Only for pages selectors cannot read. Verbatim-verified, spend-capped |
+| URL safety | `scraping/urlpolicy.py` | SSRF guard on every server-side fetch, re-checked after each redirect |
+| Politeness | `scraping/robots.py` | robots.txt + Crawl-delay honoured; 429/451 quarantine a domain |
 | API host | Railway | serves the app and runs onboarding-time collection |
 | Worker host | docker compose / optional Railway service | Airbyte import, recurring local sources, enrichment |
 
@@ -95,6 +99,79 @@ Database schema (once): `psql "$DATABASE_URL" -f postgres/ddl.sql`.
   missing credential turns the source off instead of crashing the run.
 
 ## 7. Recent work (most recent first)
+
+### 2026-10-20 - Scrapling + ScrapeGraphAI, and an audit-driven cleanup
+
+Full write-up: [`docs/ARCHITECTURE_AUDIT.md`](docs/ARCHITECTURE_AUDIT.md),
+[`docs/SCRAPING_ARCHITECTURE.md`](docs/SCRAPING_ARCHITECTURE.md),
+[`docs/SCRAPING_BENCHMARKS.md`](docs/SCRAPING_BENCHMARKS.md).
+
+**The problem that shaped everything.** The audit found the bottleneck was depth,
+not breadth: `collect_until` hit its ~200 target by running the Tavily search
+three times, and a search API returns a ~200-character snippet with no author,
+rating or date. Three passes over one forum thread returned three snippets of it.
+
+**What was added**
+
+- `connectors/scrapling_source.py` - reads the pages search already found. Three
+  fetch tiers (requests / Scrapling session / browser), chosen per page; a
+  browser only when the page produced nothing *and* looks client-rendered.
+- `scraping/extract.py` - five strategies in precision order: JSON-LD then
+  microdata, per-site config, structural (sibling shape, survives hashed class
+  names), whole-page article. Each record is tagged `review` or `mention`.
+- `connectors/scrapegraph_source.py` - AI extraction, off by default, offered a
+  page only when deterministic extraction found **no reviews** on it. Two
+  backends: the library, or the already-configured `openai` client.
+- `ingestion/routing.py` - rule-based engine selection with per-domain history in
+  `marts.engine_stats`. No LLM decides which scraper runs.
+- `quality.py` - validation, provenance, and near-duplicate detection **scoped to
+  one (brand, URL)** so two customers writing the same sentence on different
+  pages stay two reviews.
+- `scraping/{urlpolicy,robots,budget,evidence,metrics}.py` - SSRF guard, robots
+  compliance, page/time/spend bounds, verbatim verification, per-engine counters.
+- `GET /api/collection-health` plus a dashboard panel; onboarding now reports
+  **real** phases from `onboarding.PHASES`.
+
+**Bugs fixed** (severities and failure cases in the audit)
+
+- *Critical*: `qc()` chunked rows across brands and judged each batch against the
+  **first row's brand**, marking the rest `relevant = FALSE` - silently deleting
+  up to (N-1)/N of QC'd rows from the dashboard, trends, compare and RAG.
+- *Critical*: no SSRF validation on the user-supplied `website`, which became a
+  live hole the moment an engine fetched it.
+- *High*: `brand ILIKE :brand` was unescaped, so `?brand=%` returned every
+  brand's data. Seven call sites.
+- *High*: stored XSS - `esc()` on three pages escaped only `& < >` while being
+  used inside double-quoted `href` attributes.
+- *High*: Hacker News text was stored as raw HTML, polluting embeddings and the UI.
+- *High*: App Store fell back to `results[0]`, harvesting a **different
+  company's** reviews for any brand without an iOS app.
+- *High*: the QC relevance filter was missing from insights, the report sample and
+  the CSV export, so off-topic rows still shaped themes and cited evidence.
+- *High*: enrichment was O(n^2/batch) - roughly 188 full joins and 188 embedding
+  requests per 3,000 rows. Now about 32 of each.
+- *Medium*: onboarding collections were never recorded, so scrape history was
+  always empty for brands added through the product's own front door.
+- *Medium*: Apify actor runs had no timeout and could block the collection thread
+  (and every queued onboard) indefinitely.
+- Plus prompt-injection fencing, CSV formula injection, request size bounds, a
+  `metrics.retry()` deadlock, and `SCRAPEGRAPH_MAX_CALLS_PER_RUN=0` meaning
+  *unlimited* rather than *none*.
+
+**Measured** (fixed 10-page dataset, `scripts/benchmark_scraping.py --repeat 5`):
+2.33x records and 0 to 11 records carrying a star rating versus the previous
+snippet-only behaviour; the AI fallback adds 3 attributed reviews on the one
+prose-style page and nothing elsewhere. Regressions are reported too: total text
+volume drops 7% when AI extraction replaces long whole-page mentions with precise
+quotes, and latency is about 29x higher because the depth pass fetches pages and
+waits the politeness delay.
+
+**Tests**: 11 to **332** (plus 141 subtests), needing no database, network or
+API keys.
+
+**Migration required**: `psql "$DATABASE_URL" -f postgres/002_scraping_engines.sql`
+(additive and idempotent; the app degrades gracefully without it).
+
 
 - **Deployed app works end to end + scrape-anywhere + OpenAI embeddings (2026-07-08)**:
   the live Railway app now onboards any brand, scrapes from across the web and
@@ -171,6 +248,34 @@ Database schema (once): `psql "$DATABASE_URL" -f postgres/ddl.sql`.
 
 ## 8. Pending / next steps
 
+### From the 2026-10-20 engagement
+
+- [ ] **Run the migration** on the live database:
+      `psql "$DATABASE_URL" -f postgres/002_scraping_engines.sql`. Until then the
+      collection-health panel shows `migration_required` and per-engine metrics
+      are not recorded. Everything else works.
+- [ ] **Set `AUTH_USER` / `AUTH_PASS`** on any deployment holding real brands.
+      `GET /api/reports/saved/{id}` takes a sequential id and is protected only by
+      that gate, so without it saved reports are enumerable. Documented rather
+      than changed because fixing it properly needs a per-user ownership model,
+      which is a product decision.
+- [ ] **Decide the worker topology.** `railway.json` builds only the API, so the
+      worker loop - scheduled refresh, the Airbyte import, the global `qc()` pass
+      - does not run in production, though this file and the README describe one.
+      This predates the engagement; it needs a deploy decision, not a code change.
+- [ ] Optional: install `requirements-scraping.txt` plus Chromium **on a worker**
+      to enable the browser tier for client-rendered review pages. Do not put it
+      on the API image; a Chromium process is 150-300MB resident.
+- [ ] Optional: `SCRAPEGRAPH_ENABLED=1` for brands whose reviews live in prose
+      pages. Start with `SCRAPEGRAPH_MAX_COST_PER_RUN` low and watch the cost
+      column in the collection-health panel.
+- [ ] Not done: in-process cache eviction for `insights._CACHE` and
+      `report._CACHE` (bounded in practice by brand count), and the legacy
+      Trustpilot connector still does not consult robots.txt the way the new
+      engine does.
+
+### Earlier
+
 - [x] Committed the session's changes (categories, Tavily, Firecrawl,
       Reddit-via-web, Trustpilot/Playwright, README, this handoff) as `362ebe5`
       and pushed to `origin/main`. Railway is redeploying the API.
@@ -202,3 +307,21 @@ Database schema (once): `psql "$DATABASE_URL" -f postgres/ddl.sql`.
   AUTH_PASS gate) by design, so a share link opens a saved report without the app
   password. The token is unguessable and the data is public reviews, but be aware
   the link exposes that brand's report to anyone who has it.
+- `GET /api/reports/saved/{id}` is NOT exempt, but it takes a sequential
+  `bigserial`, so with the password gate off it is enumerable. Turn the gate on.
+- Any brand filter written as `brand ILIKE %(brand)s` must pass the value through
+  `db.like_param()`. Unescaped, `?brand=%` matches every brand in the database.
+- Scraped text reaching an LLM must be fenced with `prompting.fence_all()`, and
+  the system prompt must carry `prompting.UNTRUSTED_CONTENT_RULE`. A scraped page
+  containing "ignore previous instructions" is a real input, not a hypothetical.
+- Any server-side fetch of a URL that came from a user or a web page must pass
+  `scraping.urlpolicy.check()` first, and **again after every redirect** - a
+  validated host can redirect to the cloud metadata endpoint.
+- `esc()` in the static pages must escape the quote characters as well as
+  `& < >`: the templates interpolate scraped values inside double-quoted
+  attributes.
+- Scrapling ships Cloudflare-solving and fingerprint-spoofing features. They are
+  deliberately unused and `tests/test_scrapling_connector.py::ComplianceTests`
+  asserts that against the source. Do not enable them.
+- The inline frontend JS has no build step or linter. Run
+  `python scripts/check_frontend_js.py` after editing a `<script>` block.
