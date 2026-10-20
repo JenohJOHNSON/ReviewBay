@@ -68,6 +68,16 @@
   table.runs th { text-align:left; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:.04em; font-size:11px; padding:6px 10px; border-bottom:1px solid var(--line); white-space:nowrap; }
   table.runs td { padding:8px 10px; border-bottom:1px solid var(--line); }
   table.runs tr:last-child td { border-bottom:none; }
+  /* Collection health: is the SCRAPING working, as opposed to how the reviews feel. */
+  .hgrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:4px; }
+  .hstat { border:1px solid var(--line); padding:10px 12px; }
+  .hstat .n { font-family:var(--font-mono); font-size:22px; font-weight:500; letter-spacing:-.01em; }
+  .hstat .l { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin-top:2px; }
+  .hnote { font-size:13px; color:var(--muted); margin:10px 0 0; }
+  .hbar { height:4px; background:var(--line); margin-top:6px; }
+  .hbar span { display:block; height:100%; background:var(--pos); }
+  .hbar.warn span { background:var(--neu); }
+  .hbar.bad span { background:var(--neg); }
   .trendchart { display:flex; align-items:flex-end; gap:6px; overflow-x:auto; padding:10px 2px 0; min-height:120px; }
   .tbar { display:flex; flex-direction:column; align-items:center; flex:0 0 auto; }
   .tstack { width:26px; display:flex; flex-direction:column; border-radius:0; overflow:hidden; }
@@ -129,6 +139,7 @@
   <div id="content"><div class="empty">Loading</div></div>
   <div id="trendPanel"></div>
   <div id="reviews"></div>
+  <div id="healthPanel"></div>
   <div id="runsPanel"></div>
   <div id="connectorsPanel"></div>
   <div id="alertsPanel"></div>
@@ -137,7 +148,12 @@
 const brandSel = document.getElementById('brand');
 const content = document.getElementById('content');
 const insightsEl = document.getElementById('insights');
-function esc(s){ return (s||'').toString().replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+// Escape for BOTH text and attribute contexts. Review text, authors and
+// source URLs are scraped from the open web, and several templates below
+// interpolate them inside double-quoted attributes (href, title), so the
+// quote characters MUST be escaped too: without them a scraped URL
+// containing a double quote could close the attribute and inject its own.
+function esc(s){ return (s==null?'':String(s)).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 // One-sentence, deterministic reads shown on hover over the sentiment and source
 // breakdowns. Honest and simple, no LLM.
@@ -348,7 +364,7 @@ async function loadReviews(brand){
   document.getElementById('revFilter').onchange = (e) => { reviewFilter = e.target.value; loadReviews(brand); };
 }
 
-brandSel.addEventListener('change', () => { load(brandSel.value); loadSentimentAlert(brandSel.value); loadInsights(brandSel.value); loadTrend(brandSel.value); loadReviews(brandSel.value); loadRuns(brandSel.value); });
+brandSel.addEventListener('change', () => { load(brandSel.value); loadSentimentAlert(brandSel.value); loadInsights(brandSel.value); loadTrend(brandSel.value); loadReviews(brandSel.value); loadRuns(brandSel.value); loadCollectionHealth(brandSel.value); });
 
 async function loadSentimentAlert(brand){
   const el = document.getElementById('sentAlert');
@@ -443,6 +459,78 @@ async function loadRuns(brand){
       <tbody>${rows}</tbody></table></div></div>`;
 }
 
+async function loadCollectionHealth(brand){
+  const el = document.getElementById('healthPanel');
+  let d;
+  try { d = await (await fetch('/api/collection-health' + (brand ? '?brand=' + encodeURIComponent(brand) : ''))).json(); }
+  catch(e){ el.innerHTML=''; return; }
+  if (!d || d.setup_required) { el.innerHTML=''; return; }
+
+  const t = d.totals || {};
+  const sources = d.sources || [];
+  if (!sources.length && !(d.engines||{}).available) { el.innerHTML=''; return; }
+
+  const last = d.last_successful;
+  const ago = iso => {
+    if (!iso) return 'never';
+    const mins = Math.max(0, Math.round((Date.now() - new Date(iso).getTime())/60000));
+    if (mins < 60) return mins + 'm ago';
+    if (mins < 1440) return Math.round(mins/60) + 'h ago';
+    return Math.round(mins/1440) + 'd ago';
+  };
+
+  // Headline numbers: coverage and how much the QC pass had to discard.
+  const offPct = t.reviews ? Math.round(100 * (t.off_topic||0) / t.reviews) : 0;
+  const stats = [
+    ['' + (t.relevant||0), 'Usable reviews'],
+    ['' + (t.sources_with_data||0), 'Sources with data'],
+    [offPct + '%', 'Filtered off-topic'],
+    [ago(last && last.started_at), 'Last successful run'],
+  ].map(([n,l]) => `<div class="hstat"><div class="n">${esc(n)}</div><div class="l">${esc(l)}</div></div>`).join('');
+
+  // Per-source: count, share and how precise that source is for this brand.
+  const max = Math.max(1, ...sources.map(s => s.total||0));
+  const rows = sources.map(s => {
+    const pct = Math.round(100*(s.total||0)/max);
+    const prec = s.precision==null ? null : Math.round(100*s.precision);
+    const cls = prec==null ? '' : (prec>=80 ? '' : (prec>=50 ? 'warn' : 'bad'));
+    const note = [
+      (s.total||0) + ' collected',
+      prec==null ? null : prec + '% on topic',
+      s.avg_rating!=null ? 'avg ' + s.avg_rating : null,
+      'seen ' + ago(s.last_captured),
+    ].filter(Boolean).join(' · ');
+    return `<div class="conn"><span class="lbl">${esc(s.label||s.source)}</span>
+      <span class="note">${esc(note)}<div class="hbar ${cls}"><span style="width:${pct}%"></span></div></span></div>`;
+  }).join('');
+
+  // Per-engine: which extraction engine did the work, and what it cost.
+  let engineBlock = '';
+  const eng = d.engines || {};
+  if (eng.available && (eng.engines||[]).length) {
+    const erows = eng.engines.map(e => {
+      const rate = e.success_rate==null ? 'n/a' : Math.round(100*e.success_rate) + '%';
+      const bits = [
+        e.valid + ' records',
+        e.attempted + ' attempts',
+        'success ' + rate,
+        e.duplicates ? e.duplicates + ' dupes' : null,
+        e.ai_calls ? e.ai_calls + ' AI calls (~$' + Number(e.estimated_cost_usd||0).toFixed(4) + ')' : null,
+        e.duration_ms ? (e.duration_ms/1000).toFixed(1) + 's' : null,
+      ].filter(Boolean).join(' · ');
+      return `<div class="conn"><span class="lbl">${esc(e.engine)}</span><span class="note">${esc(bits)}</span></div>`;
+    }).join('');
+    engineBlock = `<div class="cathead2">Extraction engines, last 5 runs</div>${erows}`;
+  } else if (d.migration_required) {
+    engineBlock = `<p class="hnote">${esc(d.migration_required)}</p>`;
+  }
+
+  el.innerHTML = `<div class="card full" style="margin-top:14px"><h3>Collection health</h3>
+    <div class="hgrid">${stats}</div>
+    <div class="cathead2">Sources</div>${rows || '<p class="hnote">No sources have produced data yet.</p>'}
+    ${engineBlock}</div>`;
+}
+
 async function loadConnectors(){
   const el = document.getElementById('connectorsPanel');
   let d;
@@ -486,6 +574,7 @@ function init(){
   loadTrend(chosen);
   loadReviews(chosen);
   loadRuns(chosen);
+  loadCollectionHealth(chosen);
   setInterval(() => load(brandSel.value), 60000);  // stats refresh; insights are cached server-side
 }
 init();

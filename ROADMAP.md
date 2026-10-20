@@ -4,7 +4,7 @@ A living checklist, based on `reviewbay_suggestions.md` (2026-07-08). The theme:
 make ONE demo bulletproof before adding more connectors. We do phases in order,
 one at a time, and tick items as we finish them.
 
-**Last updated:** 2026-07-08
+**Last updated:** 2026-10-20
 
 ---
 
@@ -92,7 +92,94 @@ found and fixed:
       8 real reviews (ratings, authors, text) from a real Trustpilot page, not
       blocked. Trustpilot is a working self-hosted source.
 
+## Phase 7 - Extraction depth, data quality and security  (2026-10-20)  DONE
+
+Driven by a full audit ([`docs/ARCHITECTURE_AUDIT.md`](docs/ARCHITECTURE_AUDIT.md)),
+whose central finding was that the bottleneck was **depth, not breadth**: the
+~200 target was being met by repeating the same web search, and a search API
+returns a ~200-character snippet with no author, rating or date.
+
+- [x] **Scrapling depth engine** (`connectors/scrapling_source.py`): reads the
+      pages search already found. Three fetch tiers chosen per page, browser only
+      for genuinely client-rendered pages. Replaces no existing connector.
+- [x] **Five extraction strategies** in precision order (`scraping/extract.py`):
+      JSON-LD, microdata, per-site config, structural sibling matching, whole-page
+      article. Records tagged `review` or `mention` so a news page never counts as
+      a customer review.
+- [x] **ScrapeGraphAI AI extraction** (`connectors/scrapegraph_source.py`), off by
+      default, offered a page only when deterministic extraction found no reviews.
+      Two backends so the capability ships without the library's 74-package tree.
+- [x] **Anti-fabrication gate** (`scraping/evidence.py`): AI output must appear
+      verbatim in the fetched page or it is discarded. Paraphrases, summaries and
+      invented reviews all measurably rejected.
+- [x] **Rule-based routing** (`ingestion/routing.py`) with per-domain success
+      history. No LLM decides which scraper runs.
+- [x] **Validation and deduplication** (`quality.py`), with near-duplicate
+      detection scoped to one (brand, URL) so two customers writing the same
+      sentence on different pages stay two reviews.
+- [x] **SSRF guard** (`scraping/urlpolicy.py`) on every server-side fetch,
+      re-validated after each redirect. Tested against 24 attack vectors.
+- [x] **robots.txt compliance** including `Crawl-delay`; 403/429/451 stop the
+      request rather than triggering harder retries. No anti-bot evasion.
+- [x] **Prompt-injection fencing** (`prompting.py`) for the chat, the report and
+      the QC judge.
+- [x] **Stored-XSS fix**: the `esc()` helper on three pages did not escape quote
+      characters while being used inside double-quoted `href` attributes.
+- [x] **Critical QC bug fixed**: batches spanned brands and were judged against
+      the first row's brand, silently deleting other brands' reviews.
+- [x] **Enrichment cost**: ~188 full joins and 188 embedding requests per 3,000
+      rows, down to ~32 of each (batch size + three indexes).
+- [x] **Collection health**: `GET /api/collection-health`, a dashboard panel, and
+      per-engine metrics in `marts.scrape_runs`. Onboarding reports real phases.
+- [x] **Reproducible benchmarks** (`scripts/benchmark_scraping.py`) over a fixed
+      10-page dataset, with regressions reported alongside improvements:
+      [`docs/SCRAPING_BENCHMARKS.md`](docs/SCRAPING_BENCHMARKS.md).
+- [x] Tests: 11 to **332** (plus 141 subtests), no database or network needed.
+
 ---
 
-Recommended order: finish Phase 0 (commit + cleanup), then Phase 1. Everything
-after that is additive product value, safe to do one phase at a time.
+## Next priorities
+
+Ordered by value over effort. The first two are operational and need no code.
+
+**1. Run the migration and turn on the password gate** (minutes, no code)
+`psql "$DATABASE_URL" -f postgres/002_scraping_engines.sql` unlocks per-engine
+metrics and the collection-health panel. Setting `AUTH_USER`/`AUTH_PASS` closes
+the enumerable `GET /api/reports/saved/{id}` endpoint. Both are called out in
+[`HANDOFF.md`](HANDOFF.md) section 8.
+
+**2. Decide the worker topology** (a deploy decision)
+`railway.json` builds only the API, so scheduled refresh, the Airbyte import and
+the global `qc()` pass do not run in production even though the docs describe a
+worker. Either deploy the worker service or stop documenting one.
+
+**3. Measure against a real brand** (half a day)
+The benchmarks are per page *class*, which is the honest way to measure
+extraction but says nothing about yield for a given brand. Onboard two or three
+real brands with the depth engine on and compare the collection-health panel
+against the pre-change numbers.
+
+**4. Browser tier on a worker** (half a day)
+The measured gap is client-rendered review pages, which currently yield zero.
+`requirements-scraping.txt` plus Chromium on the worker closes it. Keep it off
+the API image.
+
+**5. Per-user ownership** (the real fix for finding F11)
+Saved reports and the brand list are currently per-browser `localStorage` with no
+server-side ownership. A minimal account model would let the saved-report
+endpoint be scoped properly instead of relying on a shared password.
+
+**6. Site strategies for the domains that matter** (ongoing, cheap)
+`config/extraction_strategies.yml` is a config-only change. Add an entry when the
+collection-health panel shows a domain the generic extractors read badly.
+
+**7. Deferred from this engagement**
+In-process cache eviction for `insights._CACHE` / `report._CACHE`; teaching the
+legacy Trustpilot connector the robots.txt check the new engine does; and a
+`created_at` column type that would let the trend query stop parsing text dates.
+
+---
+
+Recommended order: the operational items (1 and 2) first, since they are
+configuration rather than code. Everything after that is additive, and safe to do
+one item at a time.

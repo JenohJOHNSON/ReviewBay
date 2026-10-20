@@ -1,0 +1,82 @@
+# Site-specific extraction strategies for the Scrapling engine.
+#
+# This is a control surface, like config/brands.yml: adding a site is a config
+# change, not a code change. It is also entirely OPTIONAL. The engine tries, in
+# order of precision:
+#
+#   1. jsonld      schema.org Review objects in <script type="application/ld+json">
+#   2. microdata   the same vocabulary as itemprop attributes
+#   3. site        the strategies in THIS file
+#   4. structural  repeated sibling blocks found by shape, not class name
+#   5. article     the page's readable text, as a single "mention"
+#
+# Most review pages are handled by 1, 2 or 4 with no entry here. Write a strategy
+# only when a domain matters enough to maintain and the generic extractors get it
+# wrong — a hand-written selector is exact today and broken after the site's next
+# redeploy, which is the trade you are accepting.
+#
+# Fields
+# ------
+#   name          label used in logs and in each row's extra.extraction.strategy
+#   domains       registrable domains or exact hostnames this applies to
+#   container     REQUIRED. selector for one review card; everything else is
+#                 evaluated inside a card
+#   text          body selectors, first match wins
+#   title         headline selectors
+#   author        reviewer-name selectors. A match longer than 80 characters is
+#                 rejected rather than stored, so a bio cannot land in `author`
+#   rating        rating selectors
+#   rating_attr   read the rating from this attribute instead of the text
+#   rating_scale  the site's maximum (e.g. 10) — values are rescaled to 1-5,
+#                 which is the scale models.py documents
+#   date          selectors for the review's own date
+#   date_attr     attribute holding the machine-readable date (default: datetime)
+#   link          selector for a per-review permalink, so each citation is exact
+#   next_page     reserved; pagination currently follows rel=next / aria-label
+#
+# A selector that matches nothing is skipped, and a strategy whose container
+# matches nothing falls through to the structural extractor. A malformed entry
+# here disables site strategies and logs once; it never breaks a collection.
+
+strategies:
+  # Mirrors the selectors already used by connectors/playwright_source.py, and
+  # carries the same caveat that file documents: Trustpilot's class names are
+  # obfuscated and drift, so the data-* hooks are the stable part. These are NOT
+  # verified against a live page as of this commit. If the structural extractor
+  # already handles the page (it did in tests/fixtures/structural_reviews.html,
+  # which is modelled on this markup), you do not need this entry at all.
+  - name: trustpilot
+    domains: ["trustpilot.com"]
+    container: >-
+      article[data-service-review-card-paper],
+      article[class*="reviewCard"]
+    title: ["[data-review-title-typography]", 'a[class*="reviewTitle"]']
+    text:
+      - "[data-service-review-text-typography]"
+      - 'p[class*="reviewContent"]'
+      - 'p[class*="reviewText"]'
+    author: ["[data-consumer-name-typography]", 'span[class*="consumerName"]']
+    rating: ["[data-service-review-rating]"]
+    rating_attr: "data-service-review-rating"
+    date: ["time"]
+    date_attr: "datetime"
+    link: ['a[href*="/reviews/"]']
+
+# ── More examples, left commented because they are unverified ──
+#
+#  - name: example-shop
+#    domains: ["example-shop.com"]
+#    container: ".product-review"
+#    title: [".review-title"]
+#    text: [".review-body"]
+#    author: [".reviewer-name"]
+#    rating: [".stars"]
+#    rating_attr: "data-stars"
+#    date: ["time.review-date"]
+#
+#  - name: ten-point-scale-site
+#    domains: ["example-critics.com"]
+#    container: "li.critic-review"
+#    text: ["blockquote"]
+#    rating: [".score"]
+#    rating_scale: 10          # "8/10" is stored as 4.0

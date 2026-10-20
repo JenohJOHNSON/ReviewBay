@@ -1,0 +1,36 @@
+# Optional scraping extras. NOT installed by the default images.
+#
+# Install these only in a service that will actually use them, and never in the
+# API image unless you have measured its memory headroom: a Chromium process is
+# 150-300MB resident, which is most of a small Railway instance.
+#
+#     pip install -r requirements.txt -r requirements-scraping.txt
+#     python -m playwright install --with-deps chromium
+#
+# What each line buys:
+#
+#   scrapling[fetchers]
+#     Adds Scrapling's HTTP and browser fetchers (curl_cffi, playwright,
+#     patchright, browserforge). Enables two things in
+#     connectors/scrapling_source.py:
+#       * SCRAPLING_FETCH_TIER=scrapling — FetcherSession, so a run reuses
+#         connections across pages instead of reconnecting per page
+#       * SCRAPLING_BROWSER_ENABLED=1    — the browser tier, used ONLY for a page
+#         that returned no extractable content AND looks client-rendered
+#     Note: this extra also ships fingerprint-spoofing and Cloudflare-solving
+#     features. ReviewBay does not enable them and has no setting that does; see
+#     docs/SCRAPING_ARCHITECTURE.md § Compliance.
+#
+#   selectolax
+#     Used by the pre-existing opt-in Trustpilot connector
+#     (connectors/playwright_source.py), which is documented in the README but
+#     was never installable from requirements.txt. Listing it here makes that
+#     connector actually usable without putting a browser in every image.
+#
+# Trustpilot's live robots.txt disallows this project's user agent, so the
+# Scrapling engine will decline to fetch it. The legacy Trustpilot connector
+# predates that check and does not consult robots.txt; if you enable it, confirm
+# you have permission for your use case.
+
+scrapling[fetchers]>=0.5,<0.6
+selectolax>=0.3,<0.4

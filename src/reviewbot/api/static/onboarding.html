@@ -95,7 +95,12 @@ const LABELS = { instagram:'Instagram', facebook:'Facebook', google_maps:'Google
   yelp:'Yelp', tripadvisor:'TripAdvisor', twitter:'X (Twitter)', linkedin:'LinkedIn' };
 function prettify(k){ return LABELS[k] || k.replace(/_/g,' ').replace(/\b\w/g, c=>c.toUpperCase()); }
 const $ = id => document.getElementById(id);
-function esc(s){ return (s||'').toString().replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+// Escape for BOTH text and attribute contexts. Review text, authors and
+// source URLs are scraped from the open web, and several templates below
+// interpolate them inside double-quoted attributes (href, title), so the
+// quote characters MUST be escaped too: without them a scraped URL
+// containing a double quote could close the attribute and inject its own.
+function esc(s){ return (s==null?'':String(s)).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 let currentBrand = null, poll = null;
 
 function loadExisting(){
@@ -108,28 +113,64 @@ function loadExisting(){
 }
 
 function renderSteps(job){
-  const done = job.status === 'done';
-  const checking = job.phase === 'checking';
-  const analyzing = job.phase === 'analyzing' || checking || done;
+  // The phase list comes FROM THE SERVER (onboarding.PHASES), so this page and
+  // the API cannot drift apart about what the stages are.
+  const phases = (job.phases || []).map(p => p.key);
+  const phaseIdx = k => phases.indexOf(k);
+  const at = phaseIdx(job.phase);
+  const reached = k => at >= 0 && phaseIdx(k) >= 0 && at >= phaseIdx(k);
+  const finished = job.status === 'done' || job.status === 'partial' || job.status === 'empty';
+
+  // Source rows. A source that reported zero is shown as "none found" rather
+  // than left looking unfinished: knowing a source came back empty is useful.
   const known = new Set(SOURCES.map(s => s.key));
   const extras = Object.keys(job.sources || {}).filter(k => !known.has(k))
     .map(k => ({ key:k, label: prettify(k) }));
   const rows = SOURCES.concat(extras).map(s => {
-    const has = job.sources && (s.key in job.sources);
-    const cls = has ? 'dot on' : (job.status==='collecting' && !analyzing ? 'dot run' : 'dot');
-    const cnt = has ? `${job.sources[s.key]} found` : '<span class="muted">waiting</span>';
-    return `<div class="step"><span class="${cls}"></span> ${s.label} <span class="cnt">${cnt}</span></div>`;
+    const reported = job.sources && (s.key in job.sources);
+    const n = reported ? job.sources[s.key] : null;
+    const cls = !reported ? (reached('collecting') && !finished ? 'dot run' : 'dot')
+                          : (n > 0 ? 'dot on' : 'dot');
+    const cnt = !reported ? '<span class="muted">waiting</span>'
+              : (n > 0 ? `${n} found` : '<span class="muted">none found</span>');
+    return `<div class="step"><span class="${cls}"></span> ${esc(s.label)} <span class="cnt">${cnt}</span></div>`;
   }).join('');
-  const aCls = (done || checking) ? 'dot on' : (job.phase==='analyzing' ? 'dot run' : 'dot');
-  const analyzeRow = `<div class="step"><span class="${aCls}"></span> Analyzing sentiment and themes with Python ML <span class="cnt"></span></div>`;
-  const qcCls = done ? 'dot on' : (checking ? 'dot run' : 'dot');
-  const qcRow = `<div class="step"><span class="${qcCls}"></span> Quality check: relevance and sentiment <span class="cnt"></span></div>`;
-  $('steps').innerHTML = rows + analyzeRow + qcRow;
+
+  // Pipeline rows, each driven by the real phase rather than a timer.
+  const step = (key, label, detail) => {
+    const active = job.phase === key && !finished;
+    const cls = finished || (at >= 0 && phaseIdx(key) >= 0 && at > phaseIdx(key)) ? 'dot on'
+              : (active ? 'dot run' : 'dot');
+    return `<div class="step"><span class="${cls}"></span> ${esc(label)} <span class="cnt">${detail || ''}</span></div>`;
+  };
+
+  const q = [
+    job.validated != null ? `${job.validated} kept` : '',
+    job.rejected ? `${job.rejected} rejected` : '',
+    job.duplicates ? `${job.duplicates} duplicates` : '',
+  ].filter(Boolean).join(', ');
+
+  const pipeline =
+      step('reading', 'Reading review pages')
+    + step('validating', 'Validating records and removing duplicates', esc(q))
+    + step('enriching', 'Enriching: sentiment and embeddings',
+           job.analyzed === false ? '<span class="muted">will retry</span>' : '')
+    + step('checking', 'Generating intelligence');
+
+  $('steps').innerHTML = rows + pipeline;
+
+  // The headline number is reviews actually stored; `collected_new` says how
+  // many of those were new, which matters when re-collecting a known brand.
   $('count').textContent = job.collected || 0;
-  $('phaseLbl').textContent = done ? 'reviews ready' :
-      job.phase==='queued' ? 'waiting in line' :
-      job.phase==='analyzing' ? 'analyzing' :
-      checking ? 'quality check' : 'reviews collected so far';
+  const label =
+      job.status === 'partial' ? 'collected (partial)'
+    : job.status === 'empty'   ? 'nothing found yet'
+    : job.status === 'done'    ? (job.collected_new != null && job.collected_new < (job.collected || 0)
+                                   ? `reviews ready, ${job.collected_new} new`
+                                   : 'reviews ready')
+    : job.phase_label          ? job.phase_label.toLowerCase()
+    : 'reviews collected so far';
+  $('phaseLbl').textContent = label;
 }
 
 async function tick(){
@@ -137,7 +178,9 @@ async function tick(){
     const job = await (await fetch(`/api/brands/${encodeURIComponent(currentBrand)}/status`)).json();
     if(job.status === 'error'){ clearInterval(poll); $('progErr').classList.remove('hidden'); return; }
     renderSteps(job);
-    if(job.status === 'done'){
+    // "partial" and "empty" are real outcomes, not failures: the dashboard is
+    // still worth opening, so hand off rather than spinning forever.
+    if(job.status === 'done' || job.status === 'partial' || job.status === 'empty'){
       clearInterval(poll);
       $('cta').classList.remove('hidden');
     }

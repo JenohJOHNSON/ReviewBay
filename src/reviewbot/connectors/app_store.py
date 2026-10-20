@@ -95,9 +95,20 @@ class AppStoreConnector(BaseConnector):
             hay = f"{r.get('trackName', '')} {r.get('sellerName', '')}".lower()
             if needle and needle in hay:
                 return str(r["trackId"]), r.get("trackName") or brand, r.get("trackViewUrl") or ""
-        if results:  # nothing matched by name — fall back to the top hit
-            r = results[0]
-            return str(r["trackId"]), r.get("trackName") or brand, r.get("trackViewUrl") or ""
+        # No name match: SKIP. This used to fall back to results[0], which meant
+        # any brand without an iOS app silently collected a DIFFERENT company's
+        # reviews under this brand — real reviews, wrong product, and impossible
+        # to spot downstream because the rows look perfectly well-formed.
+        # google_play.py already returned None here; this makes the two agree.
+        if results:
+            log.warning(
+                "app_store: brand=%s has no name-matching app (top hit was %r by %r) "
+                "— skipping. Pin the right app with APP_STORE_ID_%s if it exists.",
+                brand,
+                results[0].get("trackName"),
+                results[0].get("sellerName"),
+                _slug(brand),
+            )
         return None
 
     def _reviews_page(self, app_id: str, country: str, page: int) -> list[dict]:

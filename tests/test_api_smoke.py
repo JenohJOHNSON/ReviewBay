@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -101,6 +102,158 @@ class ApiSmokeTests(unittest.TestCase):
         self.assertEqual(response.json()["setup_required"], "database")
         self.assertIn("DATABASE_URL", response.json()["message"])
         start_async.assert_not_called()
+
+
+
+class OnboardingValidationTests(unittest.TestCase):
+    """The website field is a URL the server will later fetch.
+
+    An unvalidated value here is a server-side request forgery with the user
+    holding the trigger, which is why it is checked at the boundary and not
+    somewhere further down the pipeline.
+    """
+
+    def test_an_internal_website_is_rejected_with_a_400(self) -> None:
+        client = TestClient(main.app)
+        for website in (
+            "http://169.254.169.254/latest/meta-data/",
+            "http://localhost:8000/admin",
+            "http://10.0.0.5/",
+            "file:///etc/passwd",
+            "http://api.railway.internal/",
+        ):
+            with self.subTest(website=website), patch.object(
+                main.onboarding, "start_async"
+            ) as start_async:
+                response = client.post(
+                    "/api/brands", json={"name": "Probe", "website": website}
+                )
+                self.assertEqual(response.status_code, 400, website)
+                self.assertEqual(response.json()["error"], "invalid_website")
+                start_async.assert_not_called()
+
+    def test_a_public_website_is_accepted_and_canonicalized(self) -> None:
+        client = TestClient(main.app)
+        with patch.object(main.onboarding, "_persist_brand"), patch.object(
+            main.onboarding, "start_async"
+        ), patch.object(main.db, "database_url", return_value="postgres://x"):
+            response = client.post(
+                "/api/brands",
+                json={"name": "Example Co", "website": "HTTPS://WWW.Example.com/?utm_source=x"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["ok"])
+
+    def test_a_bare_domain_is_upgraded_to_https(self) -> None:
+        """People type "example.com", not "https://example.com/"."""
+        normalized = main.onboarding.normalize_website("example.com")
+        self.assertTrue(normalized.startswith("https://example.com"))
+
+    def test_an_empty_website_is_allowed_because_the_field_is_optional(self) -> None:
+        self.assertIsNone(main.onboarding.normalize_website(""))
+        self.assertIsNone(main.onboarding.normalize_website(None))
+
+    def test_an_empty_brand_name_is_rejected(self) -> None:
+        client = TestClient(main.app)
+        response = client.post("/api/brands", json={"name": "   "})
+        self.assertIn(response.status_code, (400, 422))
+
+    def test_an_overlong_brand_name_is_rejected(self) -> None:
+        client = TestClient(main.app)
+        response = client.post("/api/brands", json={"name": "x" * 500})
+        self.assertEqual(response.status_code, 422)
+
+
+class RequestBoundsTests(unittest.TestCase):
+    """Without bounds, one request could fan out to hundreds of model calls."""
+
+    def test_an_overlong_question_is_rejected_before_any_work(self) -> None:
+        client = TestClient(main.app)
+        with patch.object(main.rag, "answer", side_effect=AssertionError("must not run")):
+            response = client.post("/chat", json={"question": "x" * 5000})
+        self.assertEqual(response.status_code, 422)
+
+    def test_an_empty_question_is_rejected(self) -> None:
+        client = TestClient(main.app)
+        response = client.post("/chat", json={"question": ""})
+        self.assertEqual(response.status_code, 422)
+
+    def test_too_many_brands_are_rejected(self) -> None:
+        """`brands` fans out to one embedding call and one query PER BRAND."""
+        client = TestClient(main.app)
+        with patch.object(main.rag, "answer", side_effect=AssertionError("must not run")):
+            response = client.post(
+                "/chat",
+                json={"question": "What do people say?", "brands": [f"b{i}" for i in range(500)]},
+            )
+        self.assertEqual(response.status_code, 422)
+
+    def test_a_reasonable_request_still_works(self) -> None:
+        client = TestClient(main.app)
+        source = Source(
+            text="Great service.", source="web", source_url="https://example.com",
+            author=None, rating=None, brand="B", sentiment="positive", score=1.0,
+        )
+        with patch.object(main.rag, "answer", return_value=Answer("Answer [1].", [source])):
+            response = client.post(
+                "/chat", json={"question": "What do people say?", "brands": ["A", "B"]}
+            )
+        self.assertEqual(response.status_code, 200)
+
+
+class CollectionHealthTests(unittest.TestCase):
+    def test_the_endpoint_returns_the_panel_payload(self) -> None:
+        client = TestClient(main.app)
+        payload = {
+            "brand": "B",
+            "totals": {"reviews": 10, "relevant": 9, "off_topic": 1, "sources_with_data": 2},
+            "sources": [],
+            "engines": {"available": False, "engines": [], "runs": []},
+            "last_successful": None,
+            "connectors": [],
+        }
+        with patch.object(main.health, "collection_health", return_value=payload):
+            response = client.get("/api/collection-health?brand=B")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["totals"]["reviews"], 10)
+
+    def test_it_degrades_when_the_database_is_unconfigured(self) -> None:
+        client = TestClient(main.app)
+        with patch.object(main.db, "connection",
+                          side_effect=main.db.DatabaseConfigError("DATABASE_URL is not set")):
+            response = client.get("/api/collection-health")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["setup_required"], "database")
+
+
+class FrontendEscapingTests(unittest.TestCase):
+    """Stored review text is attacker-controlled and is rendered with innerHTML.
+
+    `esc()` in index.html, compare.html and onboarding.html escaped only & < >
+    while being used inside double-quoted href attributes, so a scraped
+    source_url containing a double quote could close the attribute and inject
+    its own (for example an onmouseover handler). This asserts every page's
+    escaper covers the attribute context too.
+    """
+
+    STATIC = Path(main.__file__).parent / "static"
+
+    def test_every_page_escapes_quotes_as_well_as_angle_brackets(self) -> None:
+        pages = [p for p in self.STATIC.glob("*.html")]
+        self.assertTrue(pages)
+        checked = 0
+        for page in pages:
+            body = page.read_text(encoding="utf-8")
+            if "function esc(" not in body:
+                continue
+            checked += 1
+            with self.subTest(page=page.name):
+                definition = body.split("function esc(", 1)[1].split("\n", 1)[0]
+                self.assertIn("&quot;", definition, f"{page.name} does not escape double quotes")
+                self.assertIn("&#39;", definition, f"{page.name} does not escape single quotes")
+                self.assertIn("&lt;", definition)
+                self.assertIn("&amp;", definition)
+        self.assertGreaterEqual(checked, 5)
 
 
 if __name__ == "__main__":

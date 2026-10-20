@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS airbyte.app_brand_map (
 -- raw: exactly what the connectors produced. The loader upserts here.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS raw.reviews_raw (
-    id           text PRIMARY KEY,          -- stable hash (source, url, text)
+    id           text PRIMARY KEY,          -- stable hash (brand, source, url, text)
     brand        text NOT NULL,
     source       text NOT NULL,             -- web | app_store | google_play | ...
     source_url   text,                      -- the citation link

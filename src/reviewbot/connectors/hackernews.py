@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 
 import requests
 
+from .. import text as textclean
 from ..models import NormalizedReview
 from .base import BaseConnector
 
@@ -77,11 +78,13 @@ class HackerNewsConnector(BaseConnector):
         if not object_id:
             return None
         # A hit is either a story (title + optional story_text) or a comment.
-        title = (h.get("title") or "").strip()
-        story_text = (h.get("story_text") or "").strip()
-        comment_text = (h.get("comment_text") or "").strip()
-        parts = [p for p in (title, story_text, comment_text) if p]
-        text = "\n\n".join(parts).strip()
+        # Algolia returns story_text and comment_text as HTML (<p>, <a href>,
+        # &#x27;), so these MUST be cleaned: stored raw they polluted the
+        # embedding, rendered as literal tags on the dashboard, and went into the
+        # LLM context as markup.
+        text = textclean.join_parts(
+            h.get("title"), h.get("story_text"), h.get("comment_text")
+        )
         if not text:
             return None
         ts = h.get("created_at_i")

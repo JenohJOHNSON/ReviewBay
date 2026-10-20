@@ -22,6 +22,13 @@ import os
 
 log = logging.getLogger(__name__)
 
+# `.call()` blocks until the actor run finishes, and without a bound a hung actor
+# blocks the collection thread forever — which, with MAX_CONCURRENT_COLLECTIONS=1,
+# also blocks every onboard queued behind it. `timeout_secs` asks Apify to abort
+# the run itself; `wait_secs` bounds how long we wait for it locally.
+ACTOR_TIMEOUT_SECS = int(os.environ.get("APIFY_ACTOR_TIMEOUT_SECS", "300"))
+ACTOR_WAIT_SECS = int(os.environ.get("APIFY_ACTOR_WAIT_SECS", "330"))
+
 
 def _all_tokens() -> list[str]:
     raw = os.environ.get("APIFY_TOKENS") or os.environ.get("APIFY_TOKEN", "")
@@ -70,6 +77,40 @@ def _run_dataset_id(run) -> str | None:
     return None
 
 
+def _supports_timeouts(call) -> bool:
+    """Whether this apify-client's `.call()` accepts the timeout keywords.
+
+    Checked by signature rather than by catching TypeError, so a TypeError
+    raised *inside* a run is not mistaken for an unsupported keyword.
+    """
+    import inspect
+
+    try:
+        params = inspect.signature(call).parameters
+    except (TypeError, ValueError):
+        return False
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return True
+    return "timeout_secs" in params and "wait_secs" in params
+
+
+def _call_actor(client, actor_id: str, run_input: dict):
+    """Run the actor with a bounded wall-clock, when the client supports it."""
+    call = client.actor(actor_id).call
+    if _supports_timeouts(call):
+        return call(
+            run_input=run_input,
+            timeout_secs=ACTOR_TIMEOUT_SECS,
+            wait_secs=ACTOR_WAIT_SECS,
+        )
+    log.warning(
+        "apify: installed client does not accept timeout_secs/wait_secs — "
+        "running %s without a time bound",
+        actor_id,
+    )
+    return call(run_input=run_input)
+
+
 def run_with_fallback(actor_id: str, run_input: dict):
     """Run an Apify actor, falling back to the next token only if the RUN fails.
 
@@ -85,7 +126,7 @@ def run_with_fallback(actor_id: str, run_input: dict):
     for i, token in enumerate(tokens, start=1):
         client = ApifyClient(token)
         try:
-            run = client.actor(actor_id).call(run_input=run_input)
+            run = _call_actor(client, actor_id, run_input)
         except Exception as err:  # noqa: BLE001 — the run failed: try the next token
             last_err = err
             log.warning(

@@ -15,13 +15,13 @@ import os
 import secrets
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .. import alerts, db
-from . import insights, onboarding, rag, report, stats
+from . import health, insights, onboarding, rag, report, stats
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 
@@ -70,10 +70,22 @@ async def _no_cache(request, call_next):
     return resp
 
 
+# Request bounds. Without them `question` was an unbounded string and `brands`
+# an unbounded list that fans out to ONE OpenAI embedding call plus one pgvector
+# query PER BRAND (rag.py), so a single request naming 500 brands was 500
+# embedding calls. Pydantic rejects an over-long request with a 422 before any
+# of that work starts.
+MAX_QUESTION_CHARS = 2000
+MAX_BRANDS_PER_REQUEST = 25
+MAX_BRAND_CHARS = 120
+
+
 class ChatRequest(BaseModel):
-    question: str
-    brand: str | None = None          # the selected brand (None = "All brands")
-    brands: list[str] | None = None   # brands available to compare (this browser's list)
+    question: str = Field(min_length=1, max_length=MAX_QUESTION_CHARS)
+    # the selected brand (None = "All brands")
+    brand: str | None = Field(default=None, max_length=MAX_BRAND_CHARS)
+    # brands available to compare (this browser's list)
+    brands: list[str] | None = Field(default=None, max_length=MAX_BRANDS_PER_REQUEST)
 
 
 class SourceOut(BaseModel):
@@ -95,8 +107,8 @@ class ChatResponse(BaseModel):
 
 
 class AddBrandRequest(BaseModel):
-    name: str
-    website: str | None = None
+    name: str = Field(min_length=1, max_length=MAX_BRAND_CHARS)
+    website: str | None = Field(default=None, max_length=2000)
 
 
 @app.get("/healthz")
@@ -267,6 +279,22 @@ def api_brands() -> dict:
 
 @app.post("/api/brands")
 def api_add_brand(req: AddBrandRequest):
+    # Validate the REQUEST before checking infrastructure. A rejected website is
+    # a 400 about the input, and whether it is acceptable does not depend on
+    # whether the database happens to be configured.
+    try:
+        website = onboarding.normalize_website(req.website)
+    except onboarding.InvalidWebsite as exc:
+        # This URL is one the server will later fetch, so a rejected one is a
+        # 400 carrying the policy reason, not a 500.
+        return JSONResponse({"ok": False, "error": "invalid_website", "message": str(exc)},
+                            status_code=400)
+    if not req.name.strip():
+        return JSONResponse(
+            {"ok": False, "error": "invalid_request", "message": "brand name is required"},
+            status_code=400,
+        )
+
     try:
         db.database_url()
     except db.DatabaseConfigError as exc:
@@ -274,9 +302,20 @@ def api_add_brand(req: AddBrandRequest):
             {"ok": False, "setup_required": "database", "message": str(exc)},
             status_code=503,
         )
-    cfg = onboarding.add_brand(req.name, req.website)
+
+    try:
+        cfg = onboarding.add_brand(req.name, website)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": "invalid_request", "message": str(exc)},
+                            status_code=400)
     onboarding.start_async(cfg)
     return {"ok": True, "brand": cfg["name"], "sources": cfg["sources"]}
+
+
+@app.get("/api/collection-health")
+def api_collection_health(brand: str | None = Query(default=None, max_length=MAX_BRAND_CHARS)) -> dict:
+    """Per-source and per-engine collection health for the dashboard panel."""
+    return health.collection_health(brand)
 
 
 @app.get("/api/brands/{brand}/status")
