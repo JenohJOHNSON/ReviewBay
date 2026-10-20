@@ -427,18 +427,18 @@ escaper (`& < > " '`), asserted by
 `tests/test_api_smoke.py::FrontendEscapingTests`, and the URL policy refuses
 those characters at the boundary as well.
 
-### Still open, by decision
+### Saved reports: closed by accounts
 
-`GET /api/reports/saved/{id}` takes a `bigserial` and is protected only by the
-optional global basic-auth gate. With `AUTH_USER`/`AUTH_PASS` unset — the default
-— any visitor can enumerate `1..N` and read every saved report. Share links use
-`secrets.token_urlsafe(9)` (72 bits) and are *designed* to be public; the by-id
-endpoint was not, and the two are currently equally exposed.
+`GET /api/reports/saved/{id}` used to take a `bigserial` protected only by the
+optional global basic-auth gate, so with that gate off any visitor could
+enumerate `1..N` and read every saved report. It was documented rather than
+changed at the time because there was no per-user model to scope it to.
 
-This is **documented rather than changed** because the dashboard uses that
-endpoint and the app has no per-user model to scope it to. Fixing it properly
-means introducing ownership, which is a product decision. **Set `AUTH_USER` and
-`AUTH_PASS` on any deployment with real brands in it.**
+Accounts provided one. Saved reports now carry an `owner_id` and are listed and
+opened only by their owner; "not yours" and "does not exist" are the same 404.
+Share links (`secrets.token_urlsafe(9)`, 72 bits) remain public by design.
+Reports saved before accounts have no owner and are visible to `ADMIN_EMAILS`
+only. See `docs/ARCHITECTURE_AUDIT.md` §7.
 
 ---
 

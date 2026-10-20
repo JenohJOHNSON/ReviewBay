@@ -527,6 +527,93 @@ type-altering ALTERs abort the run before a connection is even opened, with
 `--allow-destructive` as the deliberate override. No migration in this
 repository needs it.
 
-What is *not* verified: the SQL itself. There is no reachable database here, so
-`ddl.sql` and `002_scraping_engines.sql` have still never executed. The runner
-around them is tested; the statements inside them are not.
+**Update (accounts round):** the SQL is now verified. A throwaway PostgreSQL 16
+with pgvector 0.6.2 (`pgserver`, pip-installable, running locally) applied
+`ddl.sql`, `002`, and the new `003` and `004` through the runner, and re-applied
+all four with `--force` to prove idempotency.
+
+---
+
+## 7. Found while building accounts and the free-model fallback
+
+With a real database available for the first time in this engagement, the
+account work was verified end to end, and that verification found problems
+the earlier reads and fake-connection tests could not.
+
+### F11 — closed
+
+Saved reports now belong to the account that saved them
+(`marts.saved_reports.owner_id`, migration 003). "Not yours" and "does not
+exist" are the same 404, so ids cannot be probed. Share links (`/r/<token>`) stay
+public by design. Rows saved before accounts have no owner and are visible only
+to `ADMIN_EMAILS`.
+
+### F23 — High — brands added through the website were stored on a disposable disk
+
+Onboarding wrote new brands to `config/brands.dynamic.yml` on the API
+container's local filesystem, and the worker read the same path. On Railway that
+disk is wiped on every redeploy and is not shared with a separately deployed
+worker, so a brand added through the website was never refreshed by a worker
+there, and was forgotten entirely by the next deploy. The browser-side brand
+list (localStorage) masked this: the brand still appeared, on that one browser.
+
+Fixed: a brand registry in Postgres (`app.brands`, `app.user_brands`). The
+worker's `_load_config()` merges it in, and drops YAML brands the registry marks
+inactive. Verified against real Postgres: a brand added over HTTP appears in
+the worker's config with no YAML file present.
+
+### F24 — Medium — two spellings of one brand stored every review twice
+
+`models.stable_id` hashes the brand name case-sensitively, so "nike" and "Nike"
+produce different ids for the same review and both rows are kept. Every
+dashboard query matches brands case-insensitively, so both copies were counted.
+Before accounts this needed one person to type a brand two ways; with accounts,
+two people typing it differently is the normal case.
+
+Fixed going forward: the registry keys brands by lowercased name and the first
+spelling is canonical for everyone, so collection always uses one spelling.
+**Not fixed:** duplicates already stored under two spellings. Merging them is a
+destructive data migration (rewrite ids, drop the copies) and is listed as
+deferred rather than done quietly.
+
+### F25 — Medium — any visitor could post to the operator's alert channel
+
+`POST /api/alerts/test` sends a real message to the configured Slack/Discord
+webhook or inbox. Behind a single shared password that was the operator testing
+their setup; with open signup it is a way for anyone to post into the
+operator's channel. Now limited to `ADMIN_EMAILS`.
+
+### F26 — Medium — chat stopped at retrieval when embeddings were unavailable
+
+Generation had a fallback (an extractive answer), but retrieval did not: an
+exhausted OpenAI quota failed the question's embedding first, so the chat
+returned "could not search" and the generation fallback never ran. Now
+retrieval falls back to Postgres full-text search (`004_keyword_search.sql`
+adds the GIN index), and then to the most recent reviews. Answers say which
+happened, and keyword results never claim High confidence. Verified against
+real Postgres with no model key of any kind: the chat answered with the right
+review and a working citation.
+
+### F27 — Low — the onboarding form proceeded after a refused add
+
+When `POST /api/brands` answered 400 (a website the SSRF guard refuses), the
+page still switched to the progress screen and polled a job that was never
+started. It now shows the server's reason under the form.
+
+### F28 — Low — the health panel asked migrated databases to run the migration
+
+Found only by rendering the dashboard against a real, fully migrated database.
+The panel printed "run the migration" whenever no run had recorded engine
+metrics — a different condition. Brands refreshed only by the worker never
+record them, so the panel would have said it forever. Separately, the column
+probe cached a negative answer for the life of the process, so an API started
+before the migration kept saying it after the migration ran. Both fixed, and
+both regression-tested (the second with a counted, time-travelled probe).
+
+### Deployment ordering, handled rather than documented
+
+With accounts, every page requires sign-in, and sign-in needs migration 003.
+Deploying the code before migrating used to be a bare 500 on sign-up. The app
+now detects the missing tables (SQLSTATE 42P01, checked against the error real
+Postgres raises) and answers with the command to run; the sign-in page shows it
+before anyone types.

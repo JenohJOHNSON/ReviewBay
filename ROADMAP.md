@@ -172,65 +172,83 @@ Findings F19-F22 in [`docs/ARCHITECTURE_AUDIT.md`](docs/ARCHITECTURE_AUDIT.md).
 
 ---
 
-## Next priorities
+## Phase 9 - Accounts and the free-model fallback  (2026-10-20)  DONE
 
-**1. Run the migration and turn on the password gate** (minutes, no code)
+Asked for directly: accounts, brands that stay in the account, delete, re-run,
+and OpenRouter free models when tokens run out. This also settled the open
+ownership question (priority 5 of the previous list) in favour of real accounts.
 
-```
-python scripts/migrate.py --dry-run   # see the plan
-python scripts/migrate.py             # apply it
-```
-
-Unlocks per-engine metrics and the collection-health panel. Then set
-`AUTH_USER`/`AUTH_PASS`, which is what currently stands between a public
-deployment and an enumerable `GET /api/reports/saved/{id}`. Both are in
-[`HANDOFF.md`](HANDOFF.md) section 8.
-
-**2. Create the worker service** (minutes, a deploy decision)
-The config and the documentation are now in place; what remains is the decision.
-Either add a second Railway service pointed at `railway.worker.json`, or schedule
-`RUN_ONCE=1 python -m reviewbot.worker` externally. Doing neither means
-collection never refreshes - and now also means the QC pass never runs, which
-matters more than it did before F1 was fixed.
-
-**3. Measure against a real brand** (half a day)
-The benchmarks are per page *class*, which is the honest way to measure
-extraction but says nothing about yield for a given brand. Onboard two or three
-real brands with the depth engine on and compare the collection-health panel
-against the pre-change numbers.
-
-**4. Browser tier on a worker** (half a day)
-The one measured zero is client-rendered review pages. `docker build
---build-arg WITH_BROWSER=1 -f docker/worker.Dockerfile .` closes it. Keep it off
-the API image: Chromium is 150-300MB resident.
-
-**5. Per-user ownership** (half a day to a week, depending on the answer)
-The real fix for F11, and a **product decision rather than an engineering one**,
-which is why it is still open. Three options, in increasing cost:
-
-| Option | What it gives | What it costs |
-|---|---|---|
-| Leave it, keep the password gate on | nothing new; the hole stays closed by configuration | one forgotten env var reopens it |
-| An opaque owner key the browser generates and keeps in `localStorage`, stored on the row | real per-browser scoping, consistent with how the brand list already works | no recovery if the browser's storage is cleared; not an account |
-| Real accounts | recoverable, shareable, auditable | a login flow, sessions, and a user table |
-
-The middle option matches the app's existing identity model and needs one
-additive nullable column. It is not obviously the right answer, which is exactly
-why it should not be chosen by whoever happens to touch the file next.
-
-**6. Site strategies for the domains that matter** (ongoing, cheap)
-`config/extraction_strategies.yml` is a config-only change. Add an entry when the
-collection-health panel shows a domain the generic extractors read badly.
-
-**7. Still deferred**
-A typed `created_at` column so the trend query stops parsing text dates. This is
-the one remaining item that touches the database contract, so it wants an
-additive column plus a backfill rather than a type change, and it is worth
-measuring before doing: the cost is currently unknown because no live database
-was reachable.
+- [x] **Accounts**: sign up, sign in, sign out; scrypt password hashes; hashed
+      session tokens in HttpOnly cookies; per-client and per-address rate limits;
+      cross-site write protection; invite-only or closed signup; admin list.
+- [x] **Brands belong to accounts**, in a Postgres registry that the worker now
+      refreshes (audit F23: the old YAML file lived on a disk Railway wipes).
+      One canonical spelling per brand (F24).
+- [x] **My brands** page with **Re-run search** (single-flight, cooldown) and
+      **Delete** (keeps the reviews; stops refresh when nobody tracks it). Re-run
+      on the dashboard too. Import of pre-account browser brand lists.
+- [x] **Saved reports owned** by their account (F11 closed).
+- [x] **One LLM gateway** for chat, report, QC and extraction, falling back from
+      OpenAI to OpenRouter free models with per-model cooldowns. Embeddings fall
+      back only to the same model; chat retrieval falls back to full-text search.
+- [x] `/api/alerts/test` limited to admins (F25).
+- [x] Verified on a real PostgreSQL 16 + pgvector and in real Chrome; the run
+      found and fixed F28.
 
 ---
 
-Recommended order: 1 and 2 first - they are configuration, they take minutes, and
-until they are done the pipeline is not actually running end to end. Everything
-after that is additive and safe to do one item at a time.
+## Next priorities
+
+**1. Migrate, then deploy** (minutes, no code)
+
+```
+python scripts/migrate.py --dry-run   # see the plan
+python scripts/migrate.py             # applies 003 (accounts) and 004 (search index)
+```
+
+Then set `ADMIN_EMAILS` to your address and decide who may register:
+`SIGNUP_INVITE_CODE` for invite-only, or `SIGNUP_ENABLED=0` once your accounts
+exist. Every tracked brand is scraped on a schedule, so open signup on a public
+URL is an open tab on the scraping bill. If the code is deployed first, sign-up
+says which command to run rather than failing.
+
+**2. Create the worker service** (minutes, a deploy decision)
+Either add a second Railway service pointed at `railway.worker.json`, or schedule
+`RUN_ONCE=1 python -m reviewbot.worker` externally. The worker now refreshes
+every brand any account tracks, from the database registry.
+
+**3. Turn on OpenRouter** (minutes)
+Create a key, set `OPENROUTER_API_KEY`, and check `GET /api/llm/status`. Run with
+`LLM_PRIMARY=openrouter` for a day to judge free-model answer quality before
+relying on it. If every free model fails with a data-policy error, see the
+account's privacy settings (https://openrouter.ai/settings/privacy).
+
+**4. Password reset and account deletion** (a day, needs an email sender)
+A forgotten password currently means a new account. Both flows need outbound
+email, which this deployment does not have; the SMTP settings used for alerts
+are the obvious place to start.
+
+**5. Measure against a real brand** (half a day)
+Still open from the previous list. The benchmarks are per page class; real yield
+per brand is unmeasured.
+
+**6. Browser tier on a worker** (half a day)
+`docker build --build-arg WITH_BROWSER=1 -f docker/worker.Dockerfile .` closes
+the one measured zero (client-rendered review pages). Keep it off the API image.
+
+**7. Site strategies** (ongoing, cheap)
+`config/extraction_strategies.yml`, when the collection-health panel shows a
+domain the generic extractors read badly.
+
+**8. Still deferred**
+- Merging reviews already stored twice under two spellings of one brand (F24).
+  It rewrites ids and deletes copies, so it wants a reviewed, explicit
+  migration, not a side effect.
+- A typed `created_at` column so the trend query stops parsing text dates.
+  Additive column plus backfill; measure the current cost first, which is now
+  possible with a local Postgres (see HANDOFF's gotchas).
+
+---
+
+Recommended order: 1 before anything else (the app requires accounts now), then
+2 and 3, which are configuration. Everything after that is additive.

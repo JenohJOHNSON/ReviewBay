@@ -20,7 +20,7 @@ and a local-ML review summary. See `README.md` for the full description.
 
 | Layer | Choice | Notes |
 |-------|--------|-------|
-| Storage | Neon Postgres + pgvector | `raw.reviews_raw`, `marts.reviews` (vector(768), HNSW cosine) |
+| Storage | Railway Postgres + pgvector (moved from Neon 2026-10-20) | `raw.reviews_raw`, `marts.reviews` (vector(768), HNSW cosine) |
 | Embeddings | OpenAI `text-embedding-3-small` (768-dim) | API call; local fastembed removed (it OOM/crashed the cloud container) |
 | Sentiment | vaderSentiment | local |
 | Chat | OpenAI Responses API, `gpt-4o-mini` by default | extractive fallback |
@@ -99,6 +99,73 @@ Database schema (once): `psql "$DATABASE_URL" -f postgres/ddl.sql`.
   missing credential turns the source off instead of crashing the run.
 
 ## 7. Recent work (most recent first)
+
+### 2026-10-20 (evening) - accounts, brand management, OpenRouter fallback
+
+What was asked for: create an account; a searched brand stays in the account;
+delete a brand; re-run a brand's search; switch to free models via OpenRouter
+when tokens run out. All five are built and verified end to end in Chrome.
+
+**Accounts** (`accounts.py`, `api/auth.py`, migration 003)
+
+- Email and password, hashed with stdlib scrypt (no new dependency), with
+  constant-time verification and timing-equalized "no such user". Sessions are
+  a random token in an HttpOnly, SameSite=Lax cookie (Secure behind HTTPS);
+  only the token's SHA-256 is stored.
+- Every page except the landing page, sign-in, health checks, static assets and
+  shared-report links requires an account. Pages redirect to
+  `/login?next=...`; the API answers 401.
+- Sign-in and sign-up are rate limited per client and per address; a
+  state-changing request whose Origin/Referer names another site is refused
+  (login CSRF included). `SIGNUP_INVITE_CODE` / `SIGNUP_ENABLED` control who can
+  register, `ADMIN_EMAILS` who can do operator actions.
+- Persistence is behind a small `Store` seam. One contract suite runs against
+  an in-memory store AND real Postgres, so the fake used by the default test
+  suite cannot drift from the production SQL.
+
+**Brands belong to accounts** (`app.brands`, `app.user_brands`)
+
+- A searched brand is recorded on the account before collection starts: the
+  same list from any browser, after any deploy. The brand registry is also what
+  the worker now refreshes (audit F23: the old YAML file lived on a disk Railway
+  wipes).
+- The first spelling of a brand is canonical for everyone, so "nike" and "Nike"
+  no longer collect the same reviews twice (F24).
+- Every brand-scoped endpoint checks the brand is in the signed-in account; an
+  omitted brand is a 400 instead of "every brand in the database". Chat's "All
+  my brands" means exactly this account's brands.
+- **My brands** (`/brands`): review counts, last collection, Re-run and Delete.
+  Delete removes the brand from your account and keeps its reviews (others may
+  track it; re-adding is instant); when nobody tracks it any more, scheduled
+  refresh stops. Re-run uses the onboarding pipeline, never starts a second
+  collection of a brand already being collected, and is held to
+  `RERUN_COOLDOWN_SECONDS`. The dashboard has a Re-run button too.
+- Brands this browser remembered before accounts are offered for import.
+- Saved reports belong to their owner (F11 closed).
+
+**OpenRouter** (`llm.py`)
+
+- All four LLM call sites (chat, report, QC, AI extraction) go through one
+  gateway: OpenAI exactly as before, then each `OPENROUTER_MODELS` entry in
+  order. Quota, credit and key failures set a provider aside for 30 minutes; a
+  rate limit sets one model aside for its Retry-After; the free tier's daily cap
+  sets aside all of OpenRouter. The default list ends with `openrouter/free`,
+  OpenRouter's router over whatever free models exist that day.
+- `OPENROUTER_TASKS` defaults to chat and report: a free account gets 50
+  free-model requests a day and one QC pass can use 24.
+- Embeddings fall back ONLY to the same model through OpenRouter (billed);
+  when nothing can embed, chat retrieval falls back to Postgres full-text
+  search (migration 004, F26). Answers say which model wrote them, and say
+  plainly when they are quoted or keyword-matched.
+- Classification is tested against the OpenAI SDK's real exception classes.
+
+**Verified** with a real PostgreSQL 16 + pgvector (pgserver, local, throwaway):
+all four migrations apply and re-apply; 25 contract tests x 2 backends; 7
+end-to-end HTTP tests on real SQL; and a 14-step walkthrough in real Chrome
+(sign up, add a brand, see it from a second browser, cooldown, dashboard, chat
+with no model at all, delete, sign out, phone width) with zero page errors.
+That run also found F28, the health panel misreporting the migration.
+
 
 ### 2026-10-20 (later the same day) - the follow-up list
 
@@ -285,16 +352,19 @@ API keys.
 
 ## 8. Pending / next steps
 
-### Do these two first
+### Do these first
 
-Until both are done the pipeline is not running end to end, and neither needs a
-code change.
-
-- [ ] **Run the migration.** `python scripts/migrate.py --dry-run` to see the
-      plan, then `python scripts/migrate.py` to apply it. No `psql` needed; it is
-      idempotent and it refuses to execute anything destructive. Until then the
-      collection-health panel shows `migration_required` and per-engine metrics
-      are not recorded - everything else works.
+- [ ] **Run the migrations BEFORE (or right after) deploying this code.**
+      `python scripts/migrate.py --dry-run`, then `python scripts/migrate.py`.
+      It now applies 003 (accounts, brand registry, report owners) and 004 (the
+      keyword-search index) as well. Every page requires an account and accounts
+      need 003: until it runs, sign-up answers "run python scripts/migrate.py"
+      rather than working. Idempotent; refuses destructive SQL.
+- [ ] **Set `ADMIN_EMAILS`** to your own address, then create your account.
+      Admins can send a test alert and can see reports saved before accounts.
+- [ ] **Decide who can register.** Signup is open by default and every tracked
+      brand costs scraping money. On a public URL set `SIGNUP_INVITE_CODE`, or
+      `SIGNUP_ENABLED=0` once your accounts exist.
 - [ ] **Create the worker service, or schedule the cycle.** `railway.json` builds
       only the API. Add a second Railway service with its config-as-code path set
       to `railway.worker.json` (no healthcheck - it is a loop, not a server), or
@@ -304,12 +374,19 @@ code change.
 
 ### Also pending
 
-- [ ] **Set `AUTH_USER` / `AUTH_PASS`** on any deployment holding real brands.
-      `GET /api/reports/saved/{id}` takes a sequential id and is protected only by
-      that gate, so without it saved reports are enumerable. Still documented
-      rather than changed, because the proper fix is an ownership model and that
-      is a product decision - `ROADMAP.md` lays out the three options and what
-      each costs.
+- [ ] **OpenRouter:** create a key at https://openrouter.ai/keys and set
+      `OPENROUTER_API_KEY`. If every free model fails with "No endpoints found
+      matching your data policy", the account's privacy settings
+      (https://openrouter.ai/settings/privacy) are refusing free endpoints; the
+      logs and `GET /api/llm/status` say so. `LLM_PRIMARY=openrouter` for a while
+      is the quickest way to see how the free models answer.
+- [ ] Existing users: their brands are in their browser's localStorage, and
+      My brands offers to import them after they sign up. Reports saved before
+      accounts have no owner and are visible to admins only.
+- [ ] Not built: password reset and account deletion. Both need an email
+      sender this deployment does not have.
+- [ ] Not fixed: reviews already stored twice under two spellings of one brand
+      (audit F24). Merging them is a destructive data migration.
 - [ ] Optional: build the worker with `--build-arg WITH_BROWSER=1` to enable the
       browser tier for client-rendered review pages. Do not put it on the API
       image; a Chromium process is 150-300MB resident.
@@ -365,8 +442,9 @@ code change.
   AUTH_PASS gate) by design, so a share link opens a saved report without the app
   password. The token is unguessable and the data is public reviews, but be aware
   the link exposes that brand's report to anyone who has it.
-- `GET /api/reports/saved/{id}` is NOT exempt, but it takes a sequential
-  `bigserial`, so with the password gate off it is enumerable. Turn the gate on.
+- `GET /api/reports/saved/{id}` takes a sequential `bigserial`, so it must
+  only ever return the caller's own reports (`owner_id`), with one 404 for both
+  "not yours" and "does not exist". Before accounts it was enumerable.
 - Any brand filter written as `brand ILIKE %(brand)s` must pass the value through
   `db.like_param()`. Unescaped, `?brand=%` matches every brand in the database.
 - Scraped text reaching an LLM must be fenced with `prompting.fence_all()`, and
@@ -383,6 +461,22 @@ code change.
   asserts that against the source. Do not enable them.
 - The inline frontend JS has no build step or linter. Run
   `python scripts/check_frontend_js.py` after editing a `<script>` block.
+- Every route is behind the login wall unless it is listed in
+  `api/auth.py`'s `_PUBLIC_*` sets, so a new route is protected by default. A new
+  brand-scoped endpoint must also pass its brand through `main._brand()`, which
+  checks membership and returns the canonical spelling.
+- Pages must load `account.js` before `brands.js`, and read the brand list only
+  after `await RB_Brands.ready()`.
+- Never point embeddings at a different model "as a fallback". Vectors from
+  another model live in another space, and search then returns confident
+  nonsense with no error anywhere. `embeddings.providers()` derives the
+  OpenRouter model from EMBED_MODEL on purpose.
+- LLM calls go through `llm.complete()`, never a new `OpenAI()` client: that is
+  what gives a call site the fallback, the cooldowns and `/api/llm/status`.
+- Real Postgres for tests: `pip install pgserver` in a scratch venv gives a
+  local Postgres 16 + pgvector; point `REVIEWBAY_TEST_DATABASE_URL` at a
+  database whose name contains "test" to run `test_accounts_contract.py` and
+  `test_postgres_e2e.py` against it (they truncate tables, hence the guard).
 - There are two worker entrypoints and only one is deployed. `reviewbot.worker`
   is what `docker-compose.yml` and `railway.worker.json` start;
   `reviewbot.ingestion.run` is a separate loop that nothing deploys. Work added
