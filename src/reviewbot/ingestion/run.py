@@ -103,6 +103,22 @@ def build_connectors(enabled: list[str]) -> list:
             elif name == "hackernews":
                 # Free Algolia HN Search, keyless. Strong for B2B/tech brands.
                 connectors.append(HackerNewsConnector())
+            elif name == "scrapling":
+                # Self-hosted depth engine. Unlike every other source it does not
+                # discover its own URLs: it reads pages the search sources already
+                # found, so building it here with no URLs yields nothing. The
+                # collection orchestrator (ingestion/collect.py) drives it with
+                # the URLs it has, which is the path that actually uses it.
+                from ..connectors.scrapling_source import ScraplingConnector
+
+                connectors.append(ScraplingConnector())
+            elif name == "scrapegraphai":
+                # AI-assisted extraction. Off unless SCRAPEGRAPH_ENABLED=1, and
+                # like scrapling it extracts from content it is handed rather than
+                # fetching; see ingestion/collect.py.
+                from ..connectors.scrapegraph_source import ScrapeGraphConnector
+
+                connectors.append(ScrapeGraphConnector())
             elif name in _APIFY_SPECS:
                 connectors.append(ApifyConnector(_APIFY_SPECS[name]))
             else:

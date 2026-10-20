@@ -1,0 +1,48 @@
+# The open-source ScrapeGraphAI library. OPT-IN, and deliberately not in the
+# default images. Read this before installing it.
+#
+#     pip install -r requirements.txt -r requirements-ai-extraction.txt
+#     # then: SCRAPEGRAPH_ENABLED=1 SCRAPEGRAPH_BACKEND=scrapegraphai
+#
+# ---------------------------------------------------------------------------
+# Why it is isolated (measured, not assumed)
+# ---------------------------------------------------------------------------
+# `pip install --dry-run --report` against this project's environment on
+# 2026-10-20 resolved scrapegraphai==2.3.1 to **74 additional packages**,
+# including:
+#
+#   boto3, botocore, s3transfer      AWS SDK (via langchain-aws)
+#   huggingface_hub, tokenizers      model hub + tokenizers
+#   langchain, langchain-classic,    the LangChain stack
+#   langchain-community, langgraph
+#   SQLAlchemy, aiohttp              (via langchain-community)
+#   playwright                       a browser
+#   undetected-playwright            a fingerprint-spoofing browser driver
+#
+# and it DOWNGRADES websockets 17.3 -> 16.1.1, which `uvicorn[standard]` also
+# depends on. That is why it does not belong in the API image.
+#
+# ---------------------------------------------------------------------------
+# You probably do not need it
+# ---------------------------------------------------------------------------
+# ReviewBay's AI-extraction capability does not require this package. The
+# `native` backend in connectors/scrapegraph_source.py does the same job with
+# the `openai` client already configured for embeddings, chat and QC, and goes
+# through the same objective, the same validation, the same verbatim-evidence
+# check, the same cache and the same spend budget. Install this file only when
+# you specifically want the library's graph pipelines.
+#
+# Either way, ReviewBay always hands the library PRE-FETCHED HTML, never a URL,
+# so no browser is launched and the project's SSRF policy, robots handling and
+# byte caps still apply. `undetected-playwright` arrives as a transitive
+# dependency and is never used.
+#
+# ---------------------------------------------------------------------------
+# Compatibility
+# ---------------------------------------------------------------------------
+# scrapegraphai 2.3.1 requires Python >=3.12,<4.0. The project images are
+# python:3.12-slim, so that is satisfied. If you install this, pin the whole
+# environment and test the API boots before deploying: the resolver WILL move
+# shared packages.
+
+scrapegraphai>=2.3,<3

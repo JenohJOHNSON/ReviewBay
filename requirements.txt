@@ -1,19 +1,36 @@
-# Shared dependencies for both the ingestion worker and the API.
-# Pinned loosely; tighten before production.
+# Base dependencies for both the ingestion worker and the API.
+#
+# Constrained at BOTH ends. The previous version used only `>=`, with a comment
+# saying "tighten before production": resolving against those floors today
+# installs openai 3.x, two major versions past the `>=2.0` the code was written
+# against, so nothing stopped the next `pip install` from changing the runtime
+# under the application. Upper bounds are set to the next major so a patch or
+# minor release still flows in but a breaking one is a deliberate decision.
+#
+# Optional extras live in their own files so an image installs only what it runs:
+#   requirements-scraping.txt       browser + Trustpilot extras (worker only)
+#   requirements-ai-extraction.txt  ScrapeGraphAI (opt-in; see the file's header)
 
 # --- ingestion ---
-apify-client>=1.7            # Google Maps / Yelp / TripAdvisor / IG / FB / web actors
-google-play-scraper>=1.2     # Google Play reviews (free, no key/token)
-requests>=2.31              # App Store (Apple RSS), Tavily, Firecrawl, Reddit API
-psycopg[binary]>=3.2        # Postgres (Neon) driver
-PyYAML>=6.0
+apify-client>=1.7,<4          # Google Maps / Yelp / TripAdvisor / IG / FB / web actors
+google-play-scraper>=1.2,<2   # Google Play reviews (free, no key/token)
+requests>=2.31,<3             # App Store (Apple RSS), Tavily, Firecrawl, Reddit API
+psycopg[binary]>=3.2,<4       # Postgres (Neon) driver
+PyYAML>=6.0,<7
+
+# --- extraction (light core: lxml-based parser, NO browser, NO curl_cffi) ---
+# Scrapling's base install is the parser only (lxml, cssselect, orjson, tld,
+# w3lib). That is what `reviewbot.scraping.extract` uses, and it is why the
+# depth engine works in the API image with no browser binaries. The browser and
+# HTTP-session tiers are the `[fetchers]` extra, in requirements-scraping.txt.
+scrapling>=0.5,<0.6
 
 # --- sentiment + insights (local, free) ---
-vaderSentiment>=3.3        # local sentiment scoring (tiny lexicon, no model to load)
-scikit-learn>=1.4          # TF-IDF + KMeans for the dashboard insights (no LLM)
+vaderSentiment>=3.3,<4        # local sentiment scoring (tiny lexicon, no model to load)
+scikit-learn>=1.4,<2          # TF-IDF + KMeans for the dashboard insights (no LLM)
 
 # --- api / rag / embeddings ---
-fastapi>=0.115
-uvicorn[standard]>=0.30
-pydantic>=2.7
-openai>=2.0                 # OpenAI Responses API (chat) + embeddings API (vectors)
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+pydantic>=2.7,<3
+openai>=2.0,<4                # OpenAI Responses API (chat) + embeddings API (vectors)

@@ -58,7 +58,7 @@ SOURCE_LABELS = {
 # SEO'd" content: X / LinkedIn / Instagram posts that are publicly indexed show
 # up in web search and get tagged to their platform here, no direct scraping.
 # Double-counting is not a concern: every review has a stable id keyed on
-# (source, url, text), so the same post found twice upserts to one row.
+# (brand, source, url, text), so the same post found twice upserts to one row.
 HOST_SOURCES = (
     ("reddit.com", "reddit"),
     ("youtube.com", "youtube"),
@@ -120,6 +120,16 @@ def connector_statuses() -> list[dict]:
         importlib.util.find_spec("playwright") is not None
         and importlib.util.find_spec("selectolax") is not None
     )
+    # Scrapling's light core (the parser) is all the depth engine needs; the
+    # browser tier is a separate, optional install.
+    has_scrapling = (
+        os.environ.get("SCRAPLING_ENABLED", "1") != "0"
+        and importlib.util.find_spec("scrapling") is not None
+    )
+    has_scrapegraph = os.environ.get("SCRAPEGRAPH_ENABLED") == "1" and (
+        importlib.util.find_spec("scrapegraphai") is not None
+        or bool(os.environ.get("OPENAI_API_KEY"))
+    )
 
     def row(key, label, category, active):
         return {"key": key, "label": label, "category": category,
@@ -129,6 +139,11 @@ def connector_statuses() -> list[dict]:
         # Web & News
         row("web", "Web & News", "Web & News", has_tavily or has_apify),
         row("firecrawl", "Firecrawl", "Web & News", has_firecrawl),
+        # Extraction engines: these read pages the search sources discover rather
+        # than being review platforms of their own, which is why they report as
+        # "Extraction" and never appear as a row's `source`.
+        row("scrapling", "Page reader", "Extraction", has_scrapling),
+        row("scrapegraphai", "AI extraction", "Extraction", has_scrapegraph),
         # App Reviews (free, no key)
         row("app_store", "App Store", "App Reviews", True),
         row("google_play", "Google Play", "App Reviews", True),
