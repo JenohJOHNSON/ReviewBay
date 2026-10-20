@@ -157,10 +157,11 @@ class QcWithoutAKeyTests(unittest.TestCase):
             stack.enter_context(unittest.mock.patch.object(qc_module, "_judge_batch", judge))
             stack.enter_context(unittest.mock.patch.dict(os.environ, {}, clear=False))
             os.environ.pop("OPENAI_API_KEY", None)
+            os.environ.pop("OPENROUTER_API_KEY", None)
             result = qc_module.qc()
 
         self.assertEqual(result["checked"], 0)
-        self.assertEqual(result["reason"], "no_api_key")
+        self.assertEqual(result["reason"], "no_llm_provider")
         self.assertEqual(result["skipped"], 30)
 
     def test_the_free_trusted_source_pass_still_runs_without_a_key(self):
@@ -175,6 +176,7 @@ class QcWithoutAKeyTests(unittest.TestCase):
                 unittest.mock.patch.object(qc_module.db, "like_param", lambda v: v)
             )
             os.environ.pop("OPENAI_API_KEY", None)
+            os.environ.pop("OPENROUTER_API_KEY", None)
             qc_module.qc()
         # Reviews from the brand's own page or app store listing are on-topic by
         # construction and need no model call, so that work is not key-gated.

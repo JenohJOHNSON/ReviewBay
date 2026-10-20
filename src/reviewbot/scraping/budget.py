@@ -171,6 +171,12 @@ _DEFAULT_PRICE = (0.50, 2.00)  # unknown model: assume mid-range, never free
 
 def model_price(model: str) -> tuple[float, float]:
     """(input, output) USD per million tokens for `model`."""
+    key = (model or "").strip().lower()
+    # OpenRouter's free models, and its router over them, cost nothing. Checked
+    # before the override so a price set for the paid model is not charged for
+    # calls a free fallback answered.
+    if key.endswith(":free") or key == "openrouter/free":
+        return 0.0, 0.0
     override_in = os.environ.get("SCRAPEGRAPH_PRICE_IN")
     override_out = os.environ.get("SCRAPEGRAPH_PRICE_OUT")
     if override_in and override_out:
@@ -178,7 +184,6 @@ def model_price(model: str) -> tuple[float, float]:
             return float(override_in), float(override_out)
         except ValueError:
             log.warning("ignoring non-numeric SCRAPEGRAPH_PRICE_IN/OUT")
-    key = (model or "").strip().lower()
     for name, price in _PRICES_PER_MTOK.items():
         if key == name or key.endswith("/" + name):
             return price
@@ -279,13 +284,19 @@ class SpendBudget:
         with self._lock:
             self.calls += 1
 
-    def record(self, prompt_tokens: int, completion_tokens: int) -> None:
-        """Reconcile a completed call with the provider's real token counts."""
+    def record(self, prompt_tokens: int, completion_tokens: int, model: str | None = None) -> None:
+        """Reconcile a completed call with the provider's real token counts.
+
+        `model` is the one that actually answered, when that differs from the
+        configured one (a free fallback): the cost follows the model used.
+        """
         with self._lock:
             self.prompt_tokens += max(0, int(prompt_tokens or 0))
             self.completion_tokens += max(0, int(completion_tokens or 0))
             self.cost_usd += estimate_cost(
-                self.model, max(0, int(prompt_tokens or 0)), max(0, int(completion_tokens or 0))
+                model or self.model,
+                max(0, int(prompt_tokens or 0)),
+                max(0, int(completion_tokens or 0)),
             )
 
     def snapshot(self) -> dict:
