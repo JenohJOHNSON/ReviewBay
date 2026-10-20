@@ -158,6 +158,7 @@ function renderProvenance(data){
   if (g.extractive) notes.push('AI writing was unavailable, so these are the most relevant reviews, quoted.');
   else if (g.fallback && g.model) notes.push('Written by ' + esc(g.model) + (g.free ? ' (a free model)' : '') + ' because the primary model was unavailable.');
   if (e.retrieval === 'keyword') notes.push('Found by keyword match: semantic search was unavailable.');
+  if (e.retrieval === 'mixed') notes.push('Some of these reviews are not in semantic search yet, so they were found by keyword match.');
   if (e.retrieval === 'recent') notes.push('No reviews matched your words, so these are the most recent ones.');
   return notes.length ? `<div class="meta"><span class="muted">${notes.join(' ')}</span></div>` : '';
 }

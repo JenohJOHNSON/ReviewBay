@@ -64,7 +64,7 @@ class PostgresEndToEnd(unittest.TestCase):
         with db.cursor(commit=True) as cur:
             cur.execute("TRUNCATE app.user_brands, app.sessions, app.brands, app.users "
                         "RESTART IDENTITY CASCADE")
-            cur.execute("TRUNCATE marts.reviews, marts.saved_reports")
+            cur.execute("TRUNCATE marts.reviews, marts.saved_reports, raw.reviews_raw")
         previous = accounts.set_store(accounts.PostgresStore())
         self.addCleanup(accounts.set_store, previous)
         reset_auth_state()
@@ -112,6 +112,10 @@ class PostgresEndToEnd(unittest.TestCase):
         with self.db.cursor() as cur:
             cur.execute(query, params)
             return cur.fetchall()
+
+    def sql_exec(self, query, params=()):
+        with self.db.cursor(commit=True) as cur:
+            cur.execute(query, params)
 
     def seed(self, brand, texts, sentiment="neutral"):
         with self.db.cursor(commit=True) as cur:
@@ -273,6 +277,84 @@ class PostgresEndToEnd(unittest.TestCase):
         recent = rag.keyword_retrieve("what do they say about it?", brand="Acme")
         self.assertEqual({h.retrieval for h in recent}, {"recent"})
         self.assertEqual(len(recent), 3)
+
+
+    # --- reviews saved without a search vector ---------------------------------------
+
+    def raw(self, brand, texts, ratings=None):
+        ratings = ratings or [None] * len(texts)
+        with self.db.cursor(commit=True) as cur:
+            for i, (text, rating) in enumerate(zip(texts, ratings)):
+                cur.execute(
+                    "INSERT INTO raw.reviews_raw (id, brand, source, source_url, rating, text, "
+                    "captured_at) VALUES (%s, %s, 'web', %s, %s, %s, %s)",
+                    (f"raw-{brand}-{i}", brand, f"https://example.com/r{i}", rating, text,
+                     f"2026-10-{10 + i:02d}T00:00:00"),
+                )
+
+    def test_new_reviews_reach_the_dashboard_with_no_embeddings_provider(self):
+        """The production failure: an empty OpenAI account left a new brand at 0 reviews."""
+        from reviewbot.enrich import run as enrich_run
+
+        ann = self.account("ann@example.com")
+        ann.post("/api/brands", json={"name": "Acme"})
+        self.raw("Acme", ["The delivery was three days late", "Lovely packaging",
+                          "Support never answered"], ratings=[1, 5, 2])
+        self.assertEqual(enrich_run.enrich(), 3)
+        self.assertEqual(
+            self.sql("SELECT count(*) FROM marts.reviews WHERE embedding IS NULL")[0][0], 3)
+        stats = ann.get("/api/stats", params={"brand": "Acme"}).json()
+        self.assertEqual(stats["total"], 3)
+        self.assertEqual(stats["sentiment"]["negative"], 2)
+        # Saved, so the next pass has nothing pending.
+        self.assertEqual(enrich_run.enrich(), 0)
+        body = ann.post("/chat", json={"question": "What about delivery?", "brand": "Acme"}).json()
+        self.assertIn("delivery was three days late", body["sources"][0]["excerpt"])
+
+    def test_missing_vectors_are_filled_in_once_a_provider_can_embed(self):
+        from reviewbot import embeddings
+        from reviewbot.api import rag
+        from reviewbot.enrich import run as enrich_run
+
+        self.raw("Acme", ["Great espresso", "Slow delivery"])
+        enrich_run.enrich()
+        with unittest.mock.patch.object(embeddings, "providers",
+                                        lambda: [("openai", embeddings.EMBED_MODEL)]), \
+                unittest.mock.patch.object(embeddings, "embed",
+                                           side_effect=lambda texts: [[0.5] * 768 for _ in texts]):
+            self.assertEqual(enrich_run.enrich(), 0)
+        self.assertEqual(
+            self.sql("SELECT count(*) FROM marts.reviews WHERE embedding IS NULL")[0][0], 0)
+        with unittest.mock.patch.object(embeddings, "embed_one", return_value=[0.5] * 768):
+            hits = rag.retrieve("espresso", brand="Acme")
+        self.assertEqual([h.retrieval for h in hits], ["vector", "vector"])
+
+    def test_a_vector_for_text_that_changed_meanwhile_is_not_written(self):
+        from reviewbot.enrich import run as enrich_run
+
+        self.seed("Acme", ["Original words"])
+        read = enrich_run._read_unembedded("")
+        self.sql_exec("UPDATE marts.reviews SET text = 'Edited words'")
+        enrich_run._write_vectors(read, [[0.5] * 768])
+        self.assertEqual(
+            self.sql("SELECT count(*) FROM marts.reviews WHERE embedding IS NULL")[0][0], 1)
+
+    def test_chat_also_finds_reviews_still_waiting_for_a_vector(self):
+        import json
+
+        from reviewbot import embeddings
+        from reviewbot.api import rag
+
+        self.seed("Acme", ["Great espresso shots"])
+        self.sql_exec(
+            "INSERT INTO marts.reviews (id, brand, source, source_url, text, sentiment, relevant, "
+            "captured_at, embedding) VALUES ('vec-1', 'Acme', 'web', 'https://example.com/v', "
+            "'Friendly baristas', 'positive', TRUE, '2026-10-01', %s::vector)",
+            (json.dumps([0.5] * 768),))
+        with unittest.mock.patch.object(embeddings, "embed_one", return_value=[0.5] * 768):
+            hits = rag.retrieve("espresso", brand="Acme")
+        self.assertEqual([h.retrieval for h in hits], ["vector", "keyword"])
+        self.assertEqual(hits[1].text, "Great espresso shots")
 
 
 if __name__ == "__main__":

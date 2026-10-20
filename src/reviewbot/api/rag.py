@@ -16,7 +16,11 @@ When the providers run out, the chat degrades in steps rather than stopping:
   * retrieval falls back from vector search to Postgres full-text search when
     no embeddings provider can embed the question. Before this, an exhausted
     OpenAI quota stopped the chat at retrieval, before any generation fallback
-    could help. Keyword results are labelled as such and never graded "High".
+    could help. Keyword results are labelled as such and never graded "High";
+  * reviews saved while nothing could embed have no vector yet, so vector
+    search cannot see them. When it returns fewer than TOP_K reviews, the
+    remaining places go to those reviews, found by keyword: a brand searched
+    during an outage is not invisible to chat until its vectors are filled in.
 """
 
 from __future__ import annotations
@@ -52,6 +56,7 @@ SELECT
 FROM marts.reviews
 WHERE (%(brand)s::text IS NULL OR brand ILIKE %(brand)s::text)
   AND relevant IS NOT FALSE
+  AND embedding IS NOT NULL
 ORDER BY embedding <=> %(qvec)s::vector
 LIMIT %(k)s
 """
@@ -68,6 +73,7 @@ FROM marts.reviews, to_tsquery('english', %(tsq)s) AS q
 WHERE (%(brand)s::text IS NULL OR brand ILIKE %(brand)s::text)
   AND relevant IS NOT FALSE
   AND to_tsvector('english', text) @@ q
+  AND (NOT %(unembedded_only)s::boolean OR embedding IS NULL)
 ORDER BY score DESC, captured_at DESC
 LIMIT %(k)s
 """
@@ -79,6 +85,7 @@ SELECT text, source, source_url, author, rating, brand, sentiment, 0.0 AS score
 FROM marts.reviews
 WHERE (%(brand)s::text IS NULL OR brand ILIKE %(brand)s::text)
   AND relevant IS NOT FALSE
+  AND (NOT %(unembedded_only)s::boolean OR embedding IS NULL)
 ORDER BY captured_at DESC NULLS LAST
 LIMIT %(k)s
 """
@@ -138,7 +145,13 @@ def _confidence_and_evidence(sources: list[Source]) -> tuple[str, dict]:
     if modes - {"vector"}:
         # Keyword and recency matches carry no similarity score worth grading,
         # so they never claim High: a keyword hit can be on-topic or a homonym.
-        evidence["retrieval"] = "recent" if modes == {"recent"} else "keyword"
+        if modes == {"recent"}:
+            evidence["retrieval"] = "recent"
+        elif "vector" in modes:
+            # Vector matches topped up with reviews that have no vector yet.
+            evidence["retrieval"] = "mixed"
+        else:
+            evidence["retrieval"] = "keyword"
         return ("Medium" if n >= 3 and "keyword" in modes else "Low"), evidence
     top = max((s.score for s in sources), default=0.0)
     if top >= 0.5 and n >= 3:
@@ -168,10 +181,16 @@ def _tsquery(question: str) -> str | None:
     return " | ".join(terms) if terms else None
 
 
-def keyword_retrieve(question: str, brand: str | None = None, k: int = TOP_K) -> list[Source]:
-    """Full-text search, then recency: retrieval that needs no model at all."""
+def keyword_retrieve(question: str, brand: str | None = None, k: int = TOP_K, *,
+                     unembedded_only: bool = False, recent: bool = True) -> list[Source]:
+    """Full-text search, then recency: retrieval that needs no model at all.
+
+    `unembedded_only` limits both to reviews that have no vector yet (see
+    `retrieve`); `recent=False` skips the recency fallback.
+    """
     tsq = _tsquery(question)
-    params = {"brand": db.like_param(brand), "k": k, "tsq": tsq}
+    params = {"brand": db.like_param(brand), "k": k, "tsq": tsq,
+              "unembedded_only": unembedded_only}
     with db.connection() as conn:
         with conn.cursor() as cur:
             rows, mode = [], "keyword"
@@ -179,7 +198,7 @@ def keyword_retrieve(question: str, brand: str | None = None, k: int = TOP_K) ->
                 cur.execute(_KEYWORD_SQL, params)
                 cols = [c[0].lower() for c in cur.description]
                 rows = cur.fetchall()
-            if not rows:
+            if not rows and recent:
                 mode = "recent"
                 cur.execute(_RECENT_SQL, params)
                 cols = [c[0].lower() for c in cur.description]
@@ -212,7 +231,14 @@ def retrieve(question: str, brand: str | None = None, k: int = TOP_K) -> list[So
                 },
             )
             cols = [c[0].lower() for c in cur.description]
-            return [Source(**dict(zip(cols, row))) for row in cur.fetchall()]
+            found = [Source(**dict(zip(cols, row))) for row in cur.fetchall()]
+    if len(found) < k:
+        # Reviews saved while nothing could embed have no vector yet, so the
+        # search above cannot see them. Without this, a brand searched during
+        # an outage stays invisible to chat until a later pass embeds it.
+        found += keyword_retrieve(question, brand, k - len(found),
+                                  unembedded_only=True, recent=not found)
+    return found
 
 
 def _brand_key(name: str) -> str:

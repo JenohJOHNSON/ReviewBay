@@ -24,7 +24,9 @@ so this cannot be undone by a well-meaning environment variable.
 
 The OpenRouter copy of the model is billed (about $0.02 per million tokens, the
 same as OpenAI's price), so it needs credit on the OpenRouter account; a free
-account gets a 402 and the caller falls through to keyword search (`rag.py`).
+account gets a 402. Enrichment then saves new reviews without a vector, to be
+filled in by a later pass (`enrich/run.py`), and chat searches by keyword
+(`api/rag.py`).
 OPENROUTER_EMBEDDINGS=0 turns this fallback off.
 """
 

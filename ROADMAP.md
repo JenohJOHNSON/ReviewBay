@@ -191,6 +191,9 @@ ownership question (priority 5 of the previous list) in favour of real accounts.
 - [x] **One LLM gateway** for chat, report, QC and extraction, falling back from
       OpenAI to OpenRouter free models with per-model cooldowns. Embeddings fall
       back only to the same model; chat retrieval falls back to full-text search.
+- [x] **No paid AI required** (F30): reviews that cannot be embedded are saved
+      without a vector and shown at once; a later pass adds the vector, and chat
+      reaches those reviews by keyword meanwhile.
 - [x] `/api/alerts/test` limited to admins (F25).
 - [x] Verified on a real PostgreSQL 16 + pgvector and in real Chrome; the run
       found and fixed F28.

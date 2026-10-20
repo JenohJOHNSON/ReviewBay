@@ -171,5 +171,86 @@ class KeywordRetrievalTests(unittest.TestCase):
         self.assertIsNone(rag._tsquery("what do they say about it?"))
 
 
+class _FakeCursor:
+    COLUMNS = ("text", "source", "source_url", "author", "rating", "brand", "sentiment", "score")
+
+    def __init__(self, rows):
+        self.rows, self.sql, self.params = rows, None, None
+        self.description = [(c,) for c in self.COLUMNS]
+
+    def execute(self, sql, params):
+        self.sql, self.params = sql, params
+
+    def fetchall(self):
+        return self.rows
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
+class _FakeConnection:
+    def __init__(self, rows):
+        self.cur = _FakeCursor(rows)
+
+    def cursor(self):
+        return self.cur
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
+class UnembeddedReviewTests(unittest.TestCase):
+    """Reviews saved while nothing could embed have no vector; chat still finds them."""
+
+    QUESTION = "how is the coffee?"
+
+    def vector_rows(self, n):
+        return [("Great coffee", "web", f"https://example.com/{i}", None, 5.0, "Acme",
+                 "positive", 0.6) for i in range(n)]
+
+    def retrieve(self, vector_rows, keyword_hits, k=8):
+        conn = _FakeConnection(vector_rows)
+        with patch.object(rag.db, "database_url", return_value="postgres://x"), \
+                patch.object(rag.db, "connection", return_value=conn), \
+                patch.object(rag.embeddings, "embed_one", return_value=[0.1] * 768), \
+                patch.object(rag, "keyword_retrieve", return_value=keyword_hits) as kw:
+            found = rag.retrieve(self.QUESTION, brand="Acme", k=k)
+        return found, kw, conn.cur
+
+    def test_vector_search_only_ranks_reviews_that_have_a_vector(self) -> None:
+        _found, _kw, cur = self.retrieve(self.vector_rows(8), [])
+        self.assertIn("embedding IS NOT NULL", cur.sql)
+
+    def test_a_full_vector_result_needs_no_keyword_search(self) -> None:
+        found, kw, _cur = self.retrieve(self.vector_rows(8), [])
+        kw.assert_not_called()
+        self.assertEqual(len(found), 8)
+
+    def test_remaining_places_go_to_reviews_without_a_vector(self) -> None:
+        keyword = [rag.Source(**{**SOURCES[0].__dict__, "retrieval": "keyword"})] * 2
+        found, kw, _cur = self.retrieve(self.vector_rows(5), keyword)
+        kw.assert_called_once_with(self.QUESTION, "Acme", 3, unembedded_only=True, recent=False)
+        self.assertEqual([s.retrieval for s in found], ["vector"] * 5 + ["keyword"] * 2)
+
+    def test_a_brand_with_no_vectors_at_all_is_still_answered(self) -> None:
+        recent = [rag.Source(**{**SOURCES[0].__dict__, "retrieval": "recent"})] * 3
+        found, kw, _cur = self.retrieve([], recent)
+        kw.assert_called_once_with(self.QUESTION, "Acme", 8, unembedded_only=True, recent=True)
+        self.assertEqual(len(found), 3)
+
+    def test_mixed_results_are_labelled_and_never_graded_high(self) -> None:
+        vector = [rag.Source(**{**SOURCES[0].__dict__, "score": 0.9}) for _ in range(4)]
+        keyword = [rag.Source(**{**SOURCES[0].__dict__, "retrieval": "keyword", "score": 3.0})]
+        confidence, evidence = rag._confidence_and_evidence(vector + keyword)
+        self.assertEqual(evidence["retrieval"], "mixed")
+        self.assertNotEqual(confidence, "High")
+
+
 if __name__ == "__main__":
     unittest.main()

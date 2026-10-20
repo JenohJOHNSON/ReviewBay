@@ -624,6 +624,20 @@ falling back. One shared `llm.is_out_of_credit()` now also reads the error's
 retries on top of its own backoff loop. Regression-tested with the verbatim
 production error, and the committed classifier was confirmed to fail that test.
 
+### F30 — High — new reviews needed a paid embeddings provider to appear at all
+
+Found while checking what "OpenRouter instead of OpenAI" still lacked.
+Enrichment skipped any batch it could not embed and left it pending in
+raw.reviews_raw, so with the OpenAI account empty a newly searched brand
+(PRIVEEL CUSTOM PEPTIDES, 85 reviews collected) showed 0 reviews on every page,
+although nothing on the dashboard uses the vector. No free configuration could
+fix it: another model's vectors live in a different space, so free OpenRouter
+embedding models cannot be used for this database. Reviews that cannot be
+embedded are now saved with `embedding` NULL and given a vector by a later pass;
+vector search skips them, and chat reaches them by keyword when vector search
+comes back short. Tested in unit tests, against real Postgres, and in Chrome
+with no AI keys.
+
 ### Deployment ordering, handled rather than documented
 
 With accounts, every page requires sign-in, and sign-in needs migration 003.

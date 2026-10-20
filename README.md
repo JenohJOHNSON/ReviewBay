@@ -36,7 +36,8 @@ summary (no LLM, so it is fast and reproducible).
 - **Keeps answering when tokens run out.** If OpenAI is out of quota, chat and
   reports switch to free OpenRouter models; if no model is available at all,
   chat still answers by keyword search and quotes the matching reviews, and says
-  plainly that it did.
+  plainly that it did. New reviews reach the dashboard even when nothing can
+  embed them: they are saved without a search vector, and a later run adds it.
 
 ---
 
@@ -357,7 +358,9 @@ defaults to `chat,report`, the two things a person is waiting on; set it to
 `all` once the account has credit. Embeddings fall back only to the *same*
 model served through OpenRouter (which is billed, at about OpenAI's price),
 never to a free embedding model: vectors from a different model would make
-search silently return nonsense.
+search silently return nonsense. With no embeddings provider at all, new
+reviews are still saved and shown on the dashboard, without a vector; chat finds
+them by keyword, and the next run that can embed fills the vectors in.
 
 ---
 

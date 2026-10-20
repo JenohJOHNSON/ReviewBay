@@ -100,6 +100,32 @@ Database schema (once): `psql "$DATABASE_URL" -f postgres/ddl.sql`.
 
 ## 7. Recent work (most recent first)
 
+### 2026-10-20 (late night) - new reviews no longer wait on an embeddings provider
+
+- **The problem:** PRIVEEL CUSTOM PEPTIDES showed 0 reviews because enrichment
+  skipped any batch it could not embed, and the OpenAI account was empty. So the
+  site could not run on free models alone: OpenRouter's free models cannot embed
+  for this database, and every new review needed OpenAI (or OpenRouter credit)
+  before it appeared anywhere.
+- **Now:** a batch that cannot be embedded is saved without a vector
+  (`embedding` NULL; sentiment is local, so the dashboard is complete). After
+  the first such failure the rest of the pass does not ask again. Each pass then
+  fills in missing vectors (`enrich.run.backfill`: at most 10 batches a pass,
+  paging by id so a refused batch is stepped over), only when a provider can
+  embed and only while the review's text is unchanged.
+- **Chat:** vector search ranks only reviews that have a vector. When it returns
+  fewer than `RAG_TOP_K`, the remaining places go to reviews without one, found
+  by keyword; the answer says so and is never graded High.
+- **Verified:** 21 new tests (12 for enrichment and back-fill, 5 for chat
+  retrieval, 4 against real Postgres); 16 of the 17 new unit tests fail against
+  the old code. Full suite with Postgres: 607 passed. In Chrome, against real
+  Postgres with no AI keys at all, a brand search reached the dashboard (5
+  reviews, ratings, sentiment) and chat answered from a review with no vector,
+  with the note shown.
+- **Net effect:** the branch runs on free models alone. Chat and reports use
+  free OpenRouter models, the dashboard is complete, and chat searches by
+  keyword until an embeddings provider is available again.
+
 ### 2026-10-20 (night) - the database moved from Neon to Railway
 
 - **New database:** Railway's pgvector template (`pgvector/pgvector:pg18`,
@@ -389,13 +415,15 @@ API keys.
 
 ### Do these first
 
-- [ ] **OpenAI is out of credits.** Chat, enrichment and the QC pass all stop
-      until either credits are added at
-      https://platform.openai.com/settings/organization/billing/ or the branch is
-      deployed with `OPENROUTER_API_KEY` set. Note that new reviews still cannot
-      be enriched without an embeddings provider: free OpenRouter models cannot
-      embed for this database (different vector space), and the same-model
-      fallback through OpenRouter needs OpenRouter credit.
+- [ ] **OpenAI is out of credits.** On `main` (live), chat and enrichment stop
+      until credits are added at
+      https://platform.openai.com/settings/organization/billing/. The branch
+      does not need OpenAI: deployed with `OPENROUTER_API_KEY` set, chat and
+      reports run on free models, new reviews are saved without a search vector
+      (dashboard complete, chat finds them by keyword), and the vectors are
+      filled in once an embeddings provider is back (OpenAI credit, or
+      OpenRouter credit for the same model). After deploying, press Re-run on
+      PRIVEEL CUSTOM PEPTIDES: its 85 waiting reviews are saved in that run.
 - [ ] **Delete the `db-setup` service** in Railway once you are happy with the
       move. Its job is done; it now just idles.
 - [ ] After merging the branch, check ReviewBay's Settings for the pre-deploy
