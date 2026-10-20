@@ -8,6 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Funnel+Display:wght@400;500;600;700&family=Public+Sans:wght@400;500;600&family=Martian+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/theme.css">
+<script src="/static/account.js"></script>
 <script src="/static/brands.js"></script>
 <style>
   .chatwrap { max-width:820px; margin:0 auto; padding:24px 16px 132px; }
@@ -44,6 +45,7 @@
   <span class="tag muted" style="font-size:13px">Answers cite real reviews</span>
   <span class="sp"></span>
   <nav class="nav">
+    <a href="/brands">My brands</a>
     <a href="/start">Add brand</a>
     <a href="/dashboard">Dashboard</a>
     <a href="/report">Report</a>
@@ -76,10 +78,17 @@ if (_preBrand) {
 // Populate the brand dropdown. One brand scopes the search to it; "All my brands"
 // (shown when you have 2+) lets the chat compare across them, and naming brands in
 // a question pulls those in even from a single-brand view.
-function loadBrands(){
-  const pre = (_preBrand || '').trim();
-  if (pre && window.RB_Brands) RB_Brands.add(pre);  // arriving with ?brand= remembers it here
-  const brands = window.RB_Brands ? RB_Brands.list() : [];
+async function loadBrands(){
+  await RB_Brands.ready();
+  const brands = RB_Brands.list();
+  // ?brand= only preselects a brand that is in your account.
+  const asked = (_preBrand || '').trim();
+  const pre = asked ? (RB_Brands.canonical(asked) || '') : '';
+  if (asked && !pre){
+    const introEl = document.querySelector('#chat .bubble');
+    if (introEl) introEl.innerHTML = '<b>' + esc(asked) + '</b> is not one of your brands. '
+      + '<a href="/start?brand=' + encodeURIComponent(asked) + '">Add it</a> to ask about it.';
+  }
   if (!brands.length){
     brandEl.innerHTML = '';
     const introEl = document.querySelector('#chat .bubble');
@@ -95,7 +104,7 @@ function loadBrands(){
   brandEl.value = chosen;
   qEl.placeholder = multi ? 'Ask about a brand, or compare a few (e.g. compare X and Y)'
                           : 'e.g. What do people complain about most?';
-  if (!pre && multi){
+  if (!pre && !asked && multi){
     const introEl = document.querySelector('#chat .bubble');
     if (introEl) introEl.innerHTML = 'Ask what customers are saying, about one brand or several. '
       + 'Name brands to compare them, like "compare ' + esc(brands[0]) + ' and ' + esc(brands[1]) + '". '
@@ -135,8 +144,22 @@ function renderMeta(data){
   const types = (e.source_types || []).join(', ');
   const plural = (e.sources === 1) ? '' : 's';
   return `<div class="meta"><span class="conf ${esc(c)}">Confidence: ${esc(c)}</span>`
-    + `<span>Based on ${e.reviews||0} reviews from ${e.sources||0} source${plural}`
-    + `${types?` (${esc(types)})`:''}</span></div>`;
+    + `<span>Based on ${e.reviews||0} review${(e.reviews===1)?'':'s'} from ${e.sources||0} source${plural}`
+    + `${types?` (${esc(types)})`:''}</span></div>` + renderProvenance(data);
+}
+
+// Say plainly when the answer did not come the usual way: written by a free
+// fallback model, quoted rather than written, or found by keyword because
+// semantic search was unavailable. A degraded answer that looks normal is how
+// people end up trusting it more than they should.
+function renderProvenance(data){
+  const g = data.generated_by || {}; const e = data.evidence || {};
+  const notes = [];
+  if (g.extractive) notes.push('AI writing was unavailable, so these are the most relevant reviews, quoted.');
+  else if (g.fallback && g.model) notes.push('Written by ' + esc(g.model) + (g.free ? ' (a free model)' : '') + ' because the primary model was unavailable.');
+  if (e.retrieval === 'keyword') notes.push('Found by keyword match: semantic search was unavailable.');
+  if (e.retrieval === 'recent') notes.push('No reviews matched your words, so these are the most recent ones.');
+  return notes.length ? `<div class="meta"><span class="muted">${notes.join(' ')}</span></div>` : '';
 }
 
 function renderSources(sources){
@@ -150,7 +173,7 @@ function renderSources(sources){
     + ` <a href="${esc(s.source_url)}" target="_blank" rel="noopener">open source</a>`
     + `<div class="muted">${esc(s.excerpt)}</div></div>`
   ).join('');
-  return `<div class="sources"><details open><summary>${sources.length} sources</summary>${items}</details></div>`;
+  return `<div class="sources"><details open><summary>${sources.length} source${sources.length===1?'':'s'}</summary>${items}</details></div>`;
 }
 
 form.addEventListener('submit', async (e) => {
@@ -158,8 +181,8 @@ form.addEventListener('submit', async (e) => {
   const question = qEl.value.trim();
   if(!question) return;
   const sel = brandEl.value;
-  const brands = window.RB_Brands ? RB_Brands.list() : [];
-  if(!brands.length){ return; }  // need at least one brand in this browser
+  const brands = RB_Brands.list();
+  if(!brands.length){ return; }  // need at least one brand in your account
   // "__all__" (or empty) means compare across all your brands; the full list is
   // always sent so naming brands in a question can pull them in.
   const brand = (sel === '__all__' || !sel) ? null : sel;

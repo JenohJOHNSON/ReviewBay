@@ -15,6 +15,7 @@ import time
 
 import yaml
 
+from .. import db
 from ..connectors import (
     FACEBOOK,
     GOOGLE_MAPS,
@@ -130,22 +131,60 @@ def build_connectors(enabled: list[str]) -> list:
     return connectors
 
 
+def _registry() -> tuple[list[dict], set[str]]:
+    """(active brands, keys of inactive ones) from the database registry.
+
+    The registry is where brands added through the website now live. Before it,
+    the only record was brands.dynamic.yml on the API container's own disk, so a
+    separately deployed worker never saw those brands, and a redeploy forgot
+    them. Returns nothing (and logs once) without a database or migration 003.
+    """
+    try:
+        from .. import accounts
+
+        rows = accounts.registry_brands(include_inactive=True)
+    except db.DatabaseConfigError:
+        return [], set()
+    except Exception as exc:  # noqa: BLE001 - e.g. migration 003 not applied yet
+        log.warning("brand registry unavailable (%s); using config files only", type(exc).__name__)
+        return [], set()
+    active = [accounts.as_brand_config(r) for r in rows if r.get("active")]
+    inactive = {r["brand_key"] for r in rows if not r.get("active")}
+    return active, inactive
+
+
 def _load_config() -> dict:
-    with open(CONFIG_PATH) as fh:
-        config = yaml.safe_load(fh) or {}
+    # The hand-written file is optional now that the registry exists: a worker
+    # started without it (outside the container image, say) still refreshes
+    # every brand added through the website instead of crashing on open().
+    try:
+        with open(CONFIG_PATH) as fh:
+            config = yaml.safe_load(fh) or {}
+    except FileNotFoundError:
+        log.warning("brands config %s not found; using the brand registry only", CONFIG_PATH)
+        config = {}
+    # Hand-written brands.yml entries are the operator's and always run.
     brands = list(config.get("brands") or [])
     seen = {(b.get("name") or "").strip().lower() for b in brands}
+    registry, inactive = _registry()
     if os.path.exists(DYNAMIC_CONFIG):
         try:
             with open(DYNAMIC_CONFIG) as fh:
                 dyn = yaml.safe_load(fh) or {}
             for b in dyn.get("brands") or []:
                 key = (b.get("name") or "").strip().lower()
-                if key and key not in seen:
+                # A brand every account has removed is inactive in the registry;
+                # a stale copy in the YAML file must not keep it refreshing.
+                if key and key not in seen and key not in inactive:
                     brands.append(b)
                     seen.add(key)
         except Exception:  # noqa: BLE001
             log.exception("could not read dynamic brands file %s", DYNAMIC_CONFIG)
+    for b in registry:
+        key = b["name"].strip().lower()
+        if key not in seen:
+            brands.append(b)
+            seen.add(key)
     config["brands"] = brands
     return config
 

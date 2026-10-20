@@ -8,6 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Funnel+Display:wght@400;500;600;700&family=Public+Sans:wght@400;500;600&family=Martian+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/theme.css">
+<script src="/static/account.js"></script>
 <script src="/static/brands.js"></script>
 <style>
   .toolbar select { min-width:170px; }
@@ -122,6 +123,7 @@
   <a href="/" class="brand">ReviewBay</a>
   <span class="sp"></span>
   <nav class="nav">
+    <a href="/brands">My brands</a>
     <a href="/start">Add brand</a>
     <a href="/dashboard" class="active">Dashboard</a>
     <a href="/report" id="reportLink">Report</a>
@@ -130,8 +132,11 @@
   </nav>
 </header>
 <main class="wrap">
+  <div id="notice"></div>
   <div class="toolbar">
     <select id="brand" title="Pick one of your brands"></select>
+    <button id="rerunBtn" class="btn small ghost" type="button" title="Collect this brand's reviews again now">Re-run search</button>
+    <span id="rerunState" class="muted"></span>
     <span id="updated" class="muted"></span>
   </div>
   <div id="sentAlert"></div>
@@ -364,7 +369,49 @@ async function loadReviews(brand){
   document.getElementById('revFilter').onchange = (e) => { reviewFilter = e.target.value; loadReviews(brand); };
 }
 
-brandSel.addEventListener('change', () => { load(brandSel.value); loadSentimentAlert(brandSel.value); loadInsights(brandSel.value); loadTrend(brandSel.value); loadReviews(brandSel.value); loadRuns(brandSel.value); loadCollectionHealth(brandSel.value); });
+function loadAll(brand){
+  load(brand); loadSentimentAlert(brand); loadInsights(brand); loadTrend(brand);
+  loadReviews(brand); loadRuns(brand); loadCollectionHealth(brand);
+}
+brandSel.addEventListener('change', () => { document.getElementById('rerunState').textContent = ''; loadAll(brandSel.value); });
+
+// Re-run the search for the selected brand, then refresh every panel when the
+// collection finishes. The server holds re-runs to a cooldown and never starts
+// a second collection of a brand that is already being collected.
+let rerunPoll = null;
+document.getElementById('rerunBtn').addEventListener('click', async () => {
+  const brand = brandSel.value;
+  const btn = document.getElementById('rerunBtn');
+  const state = document.getElementById('rerunState');
+  if (!brand) return;
+  btn.disabled = true;
+  state.textContent = 'Starting';
+  let res, data = {};
+  try {
+    res = await fetch('/api/brands/' + encodeURIComponent(brand) + '/rerun', { method: 'POST' });
+    try { data = await res.json(); } catch (_) {}
+  } catch (e) { state.textContent = 'Could not reach the server.'; btn.disabled = false; return; }
+  if (res.status === 429) {
+    state.textContent = 'Collected moments ago. Try again in ' + Math.max(1, Math.ceil((data.retry_after || 60) / 60)) + ' min.';
+    btn.disabled = false;
+    return;
+  }
+  if (!res.ok || !data.ok) { state.textContent = data.message || 'Could not start.'; btn.disabled = false; return; }
+  clearInterval(rerunPoll);
+  rerunPoll = setInterval(async () => {
+    let job;
+    try { job = await (await fetch('/api/brands/' + encodeURIComponent(brand) + '/status')).json(); } catch (_) { return; }
+    if (job.status === 'collecting') {
+      state.textContent = (job.phase_label || 'Collecting') + (job.collected ? ', ' + job.collected + ' found' : '');
+      return;
+    }
+    clearInterval(rerunPoll);
+    btn.disabled = false;
+    state.textContent = job.status === 'error' ? (job.message || 'The search failed.')
+      : 'Done: ' + (job.collected || 0) + ' reviews' + (job.collected_new != null ? ', ' + job.collected_new + ' new' : '') + '.';
+    if (brandSel.value === brand) loadAll(brand);
+  }, 1500);
+});
 
 async function loadSentimentAlert(brand){
   const el = document.getElementById('sentAlert');
@@ -521,8 +568,8 @@ async function loadCollectionHealth(brand){
       return `<div class="conn"><span class="lbl">${esc(e.engine)}</span><span class="note">${esc(bits)}</span></div>`;
     }).join('');
     engineBlock = `<div class="cathead2">Extraction engines, last 5 runs</div>${erows}`;
-  } else if (d.migration_required) {
-    engineBlock = `<p class="hnote">${esc(d.migration_required)}</p>`;
+  } else if (d.migration_required || d.engines_note) {
+    engineBlock = `<p class="hnote">${esc(d.migration_required || d.engines_note)}</p>`;
   }
 
   el.innerHTML = `<div class="card full" style="margin-top:14px"><h3>Collection health</h3>
@@ -557,24 +604,27 @@ function showEmpty(){
     <a href="/start" class="btn">Add a brand</a></div></div>`;
 }
 
-function init(){
+function notInAccount(name){
+  // A link to a brand you do not track (shared by someone, or one you
+  // deleted): say so, and offer to add it, rather than silently show nothing.
+  document.getElementById('notice').innerHTML = `<div class="notice warn"><span class="grow">`
+    + `<b>${esc(name)}</b> is not one of your brands.</span>`
+    + `<a class="btn small" href="/start?brand=${encodeURIComponent(name)}">Add it</a></div>`;
+}
+
+async function init(){
   setupTips();
   const qsBrand = (new URLSearchParams(location.search).get('brand') || '').trim();
-  // Opening a brand via a direct link adds it to this browser's own history.
-  if (qsBrand && window.RB_Brands) RB_Brands.add(qsBrand);
-  const brands = window.RB_Brands ? RB_Brands.list() : [];
+  await RB_Brands.ready();
+  const brands = RB_Brands.list();
   loadAlerts();
   loadConnectors();
-  if (!brands.length) { showEmpty(); return; }
-  const chosen = qsBrand || brands[0];
+  const linked = qsBrand ? RB_Brands.canonical(qsBrand) : null;
+  if (qsBrand && !linked) notInAccount(qsBrand);
+  if (!brands.length) { showEmpty(); document.getElementById('rerunBtn').style.display = 'none'; return; }
+  const chosen = linked || brands[0];
   RB_Brands.fillSelect(brandSel, { chosen });
-  load(chosen);
-  loadSentimentAlert(chosen);
-  loadInsights(chosen);
-  loadTrend(chosen);
-  loadReviews(chosen);
-  loadRuns(chosen);
-  loadCollectionHealth(chosen);
+  loadAll(chosen);
   setInterval(() => load(brandSel.value), 60000);  // stats refresh; insights are cached server-side
 }
 init();

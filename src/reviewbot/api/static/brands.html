@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ReviewBay: Your brands</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Funnel+Display:wght@400;500;600;700&family=Public+Sans:wght@400;500;600&family=Martian+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/theme.css">
+<script src="/static/account.js"></script>
+<script src="/static/brands.js"></script>
+<style>
+  .head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin: 4px 0 20px; }
+  .head h1 { font-size: 30px; letter-spacing: -.02em; }
+  .head .sub { color: var(--muted); font-family: var(--font-mono); font-size: 12px; text-transform: uppercase; letter-spacing: .1em; margin-top: 6px; }
+  .blist { display: grid; gap: 12px; }
+  .brow { background: var(--surface); border: 1px solid var(--line); padding: 18px 20px; display: grid; gap: 12px; }
+  .brow .top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .brow .name { font-family: var(--font-display); font-size: 21px; color: var(--ink); font-weight: 500; }
+  .brow .name:hover { color: var(--accent); text-decoration: none; }
+  .brow .site { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+  .facts { display: flex; gap: 22px; flex-wrap: wrap; font-family: var(--font-mono); font-size: 12px; color: var(--text-1); }
+  .facts b { color: var(--ink); font-weight: 500; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .actions .sp { flex: 1; }
+  .state { font-family: var(--font-mono); font-size: 12px; color: var(--muted); min-height: 1.4em; }
+  .state.run { color: var(--accent); }
+  .state.err { color: var(--neg); }
+  .btn.danger:hover { background: transparent; border-color: var(--neg); color: var(--neg); }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a href="/" class="brand">ReviewBay</a>
+  <span class="sp"></span>
+  <nav class="nav">
+    <a href="/brands" class="active">My brands</a>
+    <a href="/start">Add brand</a>
+    <a href="/dashboard">Dashboard</a>
+    <a href="/compare">Compare</a>
+    <a href="/chat">Chat</a>
+  </nav>
+</header>
+<main class="wrap">
+  <div class="head">
+    <div>
+      <h1>Your brands</h1>
+      <div class="sub" id="count"></div>
+    </div>
+    <a href="/start" class="btn">Add a brand</a>
+  </div>
+
+  <div class="notice hidden" id="importBox">
+    <span class="grow" id="importText"></span>
+    <button class="btn small" type="button" id="importBtn">Import</button>
+    <button class="btn small ghost" type="button" id="importDismiss">Not now</button>
+  </div>
+
+  <div id="list" class="blist"><div class="empty">Loading your brands</div></div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+// Escape for BOTH text and attribute contexts: brand names and websites are
+// user input and are interpolated inside double-quoted attributes below.
+function esc(s){ return (s==null?'':String(s)).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+const enc = encodeURIComponent;
+const polls = {};
+let limit = 0, cooldown = 300;
+
+function ago(iso){
+  if (!iso) return 'never';
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 90) return 'just now';
+  if (s < 3600) return Math.round(s / 60) + ' min ago';
+  if (s < 86400) return Math.round(s / 3600) + ' h ago';
+  return Math.round(s / 86400) + ' days ago';
+}
+
+function row(b){
+  const name = enc(b.name);
+  const site = b.website ? `<div class="site">${esc(b.website)}</div>` : '';
+  return `<div class="brow" data-brand="${esc(b.name)}">
+    <div class="top">
+      <div><a class="name" href="/dashboard?brand=${name}">${esc(b.name)}</a>${site}</div>
+    </div>
+    <div class="facts">
+      <span><b>${Number(b.reviews || 0).toLocaleString()}</b> reviews</span>
+      <span>Last collected <b>${esc(ago(b.last_collected_at))}</b></span>
+    </div>
+    <div class="actions">
+      <a class="btn small ghost" href="/dashboard?brand=${name}">Dashboard</a>
+      <a class="btn small ghost" href="/report?brand=${name}">Report</a>
+      <a class="btn small ghost" href="/chat?brand=${name}">Chat</a>
+      <span class="sp"></span>
+      <button class="btn small" type="button" data-act="rerun">Re-run search</button>
+      <button class="btn small ghost danger" type="button" data-act="delete">Delete</button>
+    </div>
+    <div class="state" data-role="state"></div>
+  </div>`;
+}
+
+function setState(el, text, cls){
+  const st = el.querySelector('[data-role="state"]');
+  st.textContent = text || '';
+  st.className = 'state' + (cls ? ' ' + cls : '');
+}
+
+function rowFor(name){
+  return Array.from(document.querySelectorAll('.brow')).find(r => r.dataset.brand === name);
+}
+
+async function load(){
+  let data;
+  try { data = await (await fetch('/api/me/brands')).json(); }
+  catch (e) { $('list').innerHTML = '<div class="empty">Could not load your brands.</div>'; return; }
+  if (data.setup_required) {
+    $('list').innerHTML = `<div class="card"><div class="empty">${esc(data.message || 'The database is not configured.')}</div></div>`;
+    return;
+  }
+  const brands = data.brands || [];
+  limit = data.limit || 0;
+  cooldown = data.rerun_cooldown_seconds || cooldown;
+  // "1 of 25 brands" with a limit (the noun agrees with the limit), else "1 brand".
+  $('count').textContent = limit ? brands.length + ' of ' + limit + ' brands'
+    : brands.length + (brands.length === 1 ? ' brand' : ' brands');
+  if (!brands.length) {
+    $('list').innerHTML = `<div class="card"><div class="empty">
+      <p style="margin:0 0 14px">No brands yet. Search for one and ReviewBay will start gathering its reviews.</p>
+      <a href="/start" class="btn">Add a brand</a></div></div>`;
+  } else {
+    $('list').innerHTML = brands.map(row).join('');
+  }
+  brands.forEach(b => {
+    const el = rowFor(b.name);
+    if (!el) return;
+    if (b.running) { setState(el, (b.phase_label || 'Collecting') + '…', 'run'); watch(b.name); }
+    else if (b.cooldown_seconds > 0) setState(el, 'Collected recently. Re-run available in ' + Math.ceil(b.cooldown_seconds / 60) + ' min.');
+  });
+  offerImport();
+}
+
+async function rerun(name){
+  const el = rowFor(name);
+  const btn = el.querySelector('[data-act="rerun"]');
+  btn.disabled = true;
+  setState(el, 'Starting…', 'run');
+  let res, data = {};
+  try {
+    res = await fetch('/api/brands/' + enc(name) + '/rerun', { method: 'POST' });
+    try { data = await res.json(); } catch (_) {}
+  } catch (e) {
+    setState(el, 'Could not reach the server.', 'err'); btn.disabled = false; return;
+  }
+  if (res.status === 429) {
+    const wait = Number(data.retry_after || res.headers.get('Retry-After') || 0);
+    setState(el, 'Collected moments ago. Try again in ' + Math.max(1, Math.ceil(wait / 60)) + ' min.');
+    btn.disabled = false;
+    return;
+  }
+  if (!res.ok || !data.ok) {
+    setState(el, data.message || 'Could not start the search.', 'err'); btn.disabled = false; return;
+  }
+  setState(el, data.already_running ? 'Already collecting. Following its progress…' : 'Collecting…', 'run');
+  watch(name);
+}
+
+function watch(name){
+  if (polls[name]) return;
+  polls[name] = setInterval(async () => {
+    const el = rowFor(name);
+    if (!el) { clearInterval(polls[name]); delete polls[name]; return; }
+    let job;
+    try { job = await (await fetch('/api/brands/' + enc(name) + '/status')).json(); } catch (_) { return; }
+    if (job.status === 'collecting') {
+      const n = job.collected ? ' ' + job.collected + ' found so far.' : '';
+      setState(el, (job.phase_label || 'Collecting') + '…' + n, 'run');
+      el.querySelector('[data-act="rerun"]').disabled = true;
+      return;
+    }
+    clearInterval(polls[name]); delete polls[name];
+    if (job.status === 'error') { setState(el, job.message || 'The search failed.', 'err'); }
+    else {
+      const fresh = job.collected_new != null ? ', ' + job.collected_new + ' new' : '';
+      setState(el, 'Done: ' + (job.collected || 0) + ' reviews' + fresh + '.');
+    }
+    // Pick up the new review count and timestamps.
+    setTimeout(load, 800);
+  }, 1500);
+}
+
+async function remove(name){
+  const ok = confirm('Remove ' + name + ' from your account?\n\n'
+    + 'Its collected reviews are kept, so you can add it back at any time.');
+  if (!ok) return;
+  const el = rowFor(name);
+  setState(el, 'Removing…');
+  try {
+    const res = await fetch('/api/brands/' + enc(name), { method: 'DELETE' });
+    if (!res.ok) throw new Error((await res.json()).message || res.status);
+  } catch (e) {
+    setState(el, 'Could not remove it: ' + e.message, 'err');
+    return;
+  }
+  await RB_Brands.refresh();
+  load();
+}
+
+$('list').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-act]');
+  if (!btn) return;
+  const name = btn.closest('.brow').dataset.brand;
+  if (btn.dataset.act === 'rerun') rerun(name);
+  if (btn.dataset.act === 'delete') remove(name);
+});
+
+// Brands this browser remembered before accounts existed.
+function offerImport(){
+  let dismissed = false;
+  try { dismissed = localStorage.getItem('reviewbay.import.dismissed') === '1'; } catch (_) {}
+  const legacy = RB_Brands.legacy();
+  if (dismissed || !legacy.length) { $('importBox').classList.add('hidden'); return; }
+  $('importText').textContent = 'This browser remembers ' + legacy.length
+    + (legacy.length === 1 ? ' brand' : ' brands') + ' from before accounts: '
+    + legacy.slice(0, 4).join(', ') + (legacy.length > 4 ? ', …' : '') + '. Add them to your account?';
+  $('importBox').classList.remove('hidden');
+}
+$('importBtn').addEventListener('click', async () => {
+  const names = RB_Brands.legacy().slice(0, 25);
+  $('importBtn').disabled = true;
+  try {
+    const res = await fetch('/api/me/brands/import', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ names }),
+    });
+    const data = await res.json();
+    if (res.ok && data.ok) RB_Brands.clearLegacy();
+    if (data.skipped && data.skipped.length) alert('Not imported: ' + data.skipped.map(s => s.name + ' (' + s.reason + ')').join('; '));
+  } catch (_) {}
+  $('importBtn').disabled = false;
+  await RB_Brands.refresh();
+  load();
+});
+$('importDismiss').addEventListener('click', () => {
+  try { localStorage.setItem('reviewbay.import.dismissed', '1'); } catch (_) {}
+  $('importBox').classList.add('hidden');
+});
+
+RB_Brands.ready().then(load);
+</script>
+</body>
+</html>

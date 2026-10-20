@@ -160,3 +160,30 @@ code { background: var(--surface-2); border: 1px solid var(--line); padding: 1px
 .status { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); margin-right: 7px; vertical-align: middle; }
 .status.ok { background: var(--pos); }
 .status.off { background: var(--muted); }
+
+/* ---- account menu (account.js) ---- */
+.acct { display: flex; align-items: center; gap: 12px; margin-left: 22px; }
+.acct-email {
+  font-family: var(--font-mono); font-size: 12px; color: var(--muted);
+  max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.acct-out, .acct a {
+  font-family: var(--font-mono); font-size: 11px; font-weight: 500;
+  text-transform: uppercase; letter-spacing: .1em;
+}
+.acct-out {
+  background: transparent; color: var(--text-1); border: 1px solid var(--line-strong);
+  padding: 6px 10px; min-height: 32px; cursor: pointer; border-radius: 0;
+}
+.acct-out:hover { border-color: var(--accent); color: var(--accent); }
+@media (max-width: 640px) { .acct { margin-left: 0; } .acct-email { display: none; } }
+
+/* ---- notices (inline banners: import offers, "not in your account") ---- */
+.notice {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  background: var(--surface); border: 1px solid var(--line-strong);
+  padding: 14px 16px; margin-bottom: 16px;
+}
+.notice.warn { border-color: var(--neu); }
+.notice .grow { flex: 1; min-width: 200px; }
+.formerr { color: var(--neg); font-size: 14px; min-height: 1.4em; margin: 8px 0 0; }
